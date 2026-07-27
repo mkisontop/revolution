@@ -1,0 +1,7 @@
+/target
+**/target
+node_modules/
+dist/
+.env
+*.log
+config.local.toml
