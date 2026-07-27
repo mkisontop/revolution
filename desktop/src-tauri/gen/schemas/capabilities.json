@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Pet overlay + panel runtime capabilities","local":true,"windows":["pet","panel"],"permissions":["core:default","core:window:allow-start-dragging"]}}
