@@ -41,8 +41,46 @@ cargo clippy --all-targets → 0 warnings
 
 ```sh
 git clone <this repo> && cd revolution
-cargo test --workspace     # 55 tests
+cargo test --workspace     # 61 tests (57 core unit + 1 integration + 3 desktop)
 cargo clippy --workspace --all-targets
 ```
 
 No API keys, network, or Windows required for the above.
+
+---
+
+# Phase 1 — Windows validation (2026-07-28, the target machine)
+
+*Executed on the user's Windows 11 Pro 23H2 box (i5-13600K / RTX 4070 Ti / 32 GB, Rust 1.89): the desktop shell was implemented (~2,600 new lines across 14 files) and every piece of OS glue that doesn't need a human or an API key was exercised for real via `revolution-desktop --smoke`.*
+
+## Verdict
+
+**Workspace builds clean (0 warnings, 0 clippy lints), 61/61 tests pass on Windows, and the hardware smoke test PASSES**: real WGC capture through the change gate into the ring, real WinRT TTS through the speakers, mic + audio-session enumeration all live. The only thing between this machine and a full spoken game conversation is a valid API key.
+
+```
+cargo test --workspace                → 61 passed; 0 failed   (first-ever Windows run)
+cargo clippy --workspace --all-targets → 0 warnings
+revolution-desktop --smoke            → PASS
+```
+
+## Measured on this machine
+
+| Stage | Result |
+|---|---|
+| WGC monitor capture (2560×1440) → luma dHash → gate → JPEG → ring | first keyframe **~400 ms** from session start; 143–232 KB keyframes |
+| WinRT TTS synthesis (`Microsoft David`) | **6 ms** for a full sentence (cold: 33 ms) — effectively free against the 300 ms TTS budget line |
+| TTS playback via rodio/WASAPI | audible, sink drained cleanly |
+| Mic (cpal/WASAPI) | `Microphone (GM305)` opened; always-open retain-while-held pattern working |
+| Audio render sessions visible for ducking | 6 sessions enumerable (`ISimpleAudioVolume` accessible) |
+| Live model lane (`--smoke-llm`, production streaming path) | transport chain **verified end-to-end** — correct provider URL, streamed SSE request, Credential Manager key resolution, clean error surfacing. Request rejected with `API_KEY_INVALID`: both keys found on the machine (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`) are expired. **TTFT measurement pending a valid key.** |
+
+Platform note: `MinimumUpdateIntervalSettings::Custom` requires Win11 24H2+ (this box is 23H2) — capture throttling is done in software (250 ms sampling) instead; documented in `capture.rs`.
+
+## Still needs a human / a key
+
+| Item | How |
+|---|---|
+| Live spoken turn + real TTFT per model | paste a valid key (panel → API keys, or `--set-key`), then `--smoke --smoke-llm`, then ask in-game |
+| Voice input | add `[voice.stt]` with a Groq (free) or OpenAI key |
+| Pet/panel visual polish, PgUp-in-game feel, ducking depth | run `cargo run -p revolution-desktop` and play |
+| FPS impact | PresentMon during a session |

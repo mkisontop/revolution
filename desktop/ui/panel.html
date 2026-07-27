@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Revolution — panel</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #12141c; color: #e8eaf2; font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 13px; display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 10px 14px; background: #191c28; border-bottom: 1px solid #2a2e40;
+    display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 14px; font-weight: 600; }
+  #game { color: #8fe3b0; font-size: 12px; }
+  main { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex;
+    flex-direction: column; gap: 12px; }
+  section { background: #191c28; border: 1px solid #2a2e40; border-radius: 10px; padding: 10px 12px; }
+  section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: #8b93b5; margin-bottom: 8px; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; row-gap: 4px; font-size: 12px; }
+  .kv b { color: #8b93b5; font-weight: 500; }
+  .ok { color: #8fe3b0; } .bad { color: #ff8f98; } .warn { color: #ffd98f; }
+
+  #transcript { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+  .line { padding: 7px 10px; border-radius: 9px; line-height: 1.45; white-space: pre-wrap; }
+  .line.user { background: #232a45; align-self: flex-end; max-width: 92%; }
+  .line.assistant { background: #1e2233; align-self: flex-start; max-width: 92%; }
+  .line.note { color: #8b93b5; font-size: 11.5px; font-style: italic; background: none; padding: 2px 6px; }
+
+  .row { display: flex; gap: 8px; }
+  input[type=text], input[type=password], textarea, select {
+    background: #10121a; color: #e8eaf2; border: 1px solid #2a2e40; border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; width: 100%; font-family: inherit; }
+  textarea { font-family: Consolas, monospace; font-size: 12px; min-height: 220px; resize: vertical; }
+  button { background: #4a56d6; border: 0; color: #fff; border-radius: 8px;
+    padding: 8px 14px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: #5a66ec; }
+  button.ghost { background: #262b40; }
+  #latency table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  #latency td { padding: 3px 4px; border-bottom: 1px solid #232738; }
+  #latency td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  #budget-pill { padding: 2px 8px; border-radius: 20px; font-size: 11px; }
+  #budget-pill.pass { background: #143526; color: #8fe3b0; }
+  #budget-pill.fail { background: #3c1a20; color: #ff8f98; }
+  .muted { color: #8b93b5; font-size: 11.5px; }
+  #toast { position: fixed; bottom: 12px; left: 14px; right: 14px; background: #262b40;
+    border: 1px solid #3a4160; padding: 9px 12px; border-radius: 9px; opacity: 0;
+    transition: opacity .25s; pointer-events: none; font-size: 12.5px; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Revolution</h1>
+  <span id="game">no game detected</span>
+  <span style="flex:1"></span>
+  <span class="muted" id="model"></span>
+</header>
+<main>
+  <section>
+    <h2>Ask Rev</h2>
+    <div class="row">
+      <input type="text" id="ask" placeholder="Type a question (or hold the PTT key and speak)…" />
+      <button id="send">Ask</button>
+    </div>
+    <div id="transcript" style="margin-top:10px"></div>
+  </section>
+
+  <section id="latency">
+    <h2>Latency ledger <span id="budget-pill"></span></h2>
+    <table>
+      <tr><td>release → first audio</td><td id="l-total">—</td></tr>
+      <tr><td>STT</td><td id="l-stt">—</td></tr>
+      <tr><td>LLM first token</td><td id="l-ttft">—</td></tr>
+      <tr><td>TTS first audio</td><td id="l-tts">—</td></tr>
+    </table>
+    <div class="muted" id="usage" style="margin-top:6px"></div>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <div class="kv" id="status-kv"></div>
+    <div id="warnings" style="margin-top:6px"></div>
+  </section>
+
+  <section>
+    <h2>Remember something</h2>
+    <div class="row">
+      <input type="text" id="memo" placeholder="e.g. I'm going dex build this run, don't spoil act 3" />
+      <button id="memo-save" class="ghost">Save</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>API keys → Windows Credential Manager</h2>
+    <div class="row" style="margin-bottom:6px">
+      <select id="key-name">
+        <option value="revolution/qa">revolution/qa (main model)</option>
+        <option value="revolution/stt">revolution/stt (whisper)</option>
+        <option value="revolution/ambient">revolution/ambient</option>
+        <option value="revolution/deep">revolution/deep</option>
+      </select>
+    </div>
+    <div class="row">
+      <input type="password" id="key-value" placeholder="paste key — stored in Credential Manager, never in a file" />
+      <button id="key-save" class="ghost">Store</button>
+    </div>
+    <div class="muted" style="margin-top:6px">config.toml references these as <code>keyring:revolution/qa</code> etc. Restart the app after storing.</div>
+  </section>
+
+  <section>
+    <h2>config.toml</h2>
+    <div class="row" style="margin-bottom:8px">
+      <button id="cfg-load" class="ghost">Load</button>
+      <button id="cfg-save">Validate + Save</button>
+      <button id="cfg-open" class="ghost">Open folder</button>
+      <span class="muted" id="cfg-path" style="align-self:center"></span>
+    </div>
+    <textarea id="cfg" spellcheck="false" placeholder="Press Load…"></textarea>
+    <div class="muted" style="margin-top:4px">Changes apply on next launch.</div>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+  const T = window.__TAURI__;
+  const invoke = T.core.invoke;
+  const listen = T.event.listen;
+  const $ = (id) => document.getElementById(id);
+
+  function toast(t) {
+    $("toast").textContent = t;
+    $("toast").classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => $("toast").classList.remove("show"), 5000);
+  }
+  listen("rev:toast", (e) => toast(e.payload));
+
+  // ---- transcript ----
+  let streamEl = null;
+  function addLine(role, text) {
+    const d = document.createElement("div");
+    d.className = "line " + role;
+    d.textContent = text;
+    $("transcript").append(d);
+    $("transcript").scrollTop = 1e9;
+    return d;
+  }
+  listen("rev:transcript", (e) => {
+    const { role, text } = e.payload;
+    if (role === "assistant" && streamEl) {
+      streamEl.textContent = text; // replace streamed partial with final
+      streamEl = null;
+    } else {
+      addLine(role, text);
+    }
+    $("transcript").scrollTop = 1e9;
+  });
+  listen("rev:delta", (e) => {
+    if (!streamEl) streamEl = addLine("assistant", "");
+    streamEl.textContent += e.payload;
+    $("transcript").scrollTop = 1e9;
+  });
+  listen("rev:speech-done", () => { streamEl = null; });
+
+  function ask() {
+    const v = $("ask").value.trim();
+    if (!v) return;
+    $("ask").value = "";
+    invoke("send_typed", { text: v });
+  }
+  $("send").onclick = ask;
+  $("ask").addEventListener("keydown", (e) => e.key === "Enter" && ask());
+
+  // ---- latency ----
+  listen("rev:latency", (e) => {
+    const p = e.payload;
+    $("l-total").textContent = p.total_ms + " ms";
+    $("l-stt").textContent = p.stt_ms + " ms";
+    $("l-ttft").textContent = p.llm_ttft_ms + " ms";
+    $("l-tts").textContent = p.tts_ms + " ms";
+    const pill = $("budget-pill");
+    pill.textContent = p.within_budget ? "within 2s budget" : "over 2s budget";
+    pill.className = p.within_budget ? "pass" : "fail";
+  });
+
+  // ---- status ----
+  function renderStatus(s) {
+    $("game").textContent = s.game
+      ? "▶ " + s.game
+      : "no game detected" + (s.foreground_exe ? " (" + s.foreground_exe + ")" : "");
+    $("model").textContent = s.qa_kind + " · " + s.qa_model;
+    const rows = [
+      ["capture", s.capture_error ? ["bad", s.capture_error]
+        : s.capture_enabled ? ["ok", `on — ${s.keyframes} keyframes, ring ${s.ring_frames} frames / ${s.ring_kb} KB`]
+        : ["warn", "paused (no game in foreground)"]],
+      ["mic", [s.mic.includes(":") && !s.mic.includes("mic:") ? "ok" : "", s.mic]],
+      ["voice ask (STT)", s.stt_ready ? ["ok", "configured"] : ["warn", "not configured — typed input only"]],
+      ["model key", s.qa_ready ? ["ok", "ready"] : ["bad", "missing — store a key below"]],
+      ["PTT hotkey", ["", s.hotkey + " (hold to talk)"]],
+    ];
+    $("status-kv").innerHTML = rows
+      .map(([k, [cls, v]]) => `<b>${k}</b><span class="${cls}">${v}</span>`)
+      .join("");
+    $("warnings").innerHTML = (s.warnings || [])
+      .map((w) => `<div class="warn">⚠ ${w}</div>`)
+      .join("");
+    $("cfg-path").textContent = s.config_path;
+    if (s.last_usage) {
+      const u = s.last_usage;
+      $("usage").textContent =
+        `last turn: ${u.input_tokens} in (${u.cache_read_tokens} cached) / ${u.output_tokens} out`;
+    }
+  }
+  listen("rev:status", (e) => renderStatus(e.payload));
+  invoke("get_status").then(renderStatus).catch(() => {});
+
+  // ---- memory ----
+  $("memo-save").onclick = () => {
+    const v = $("memo").value.trim();
+    if (!v) return;
+    invoke("remember_note", { text: v });
+    $("memo").value = "";
+  };
+
+  // ---- keys ----
+  $("key-save").onclick = async () => {
+    const v = $("key-value").value.trim();
+    if (!v) return;
+    try {
+      await invoke("save_secret", { name: $("key-name").value, value: v });
+      $("key-value").value = "";
+      toast("Stored. Restart the app to pick it up.");
+    } catch (e) { toast("Failed: " + e); }
+  };
+
+  // ---- config ----
+  $("cfg-load").onclick = async () => {
+    try { $("cfg").value = await invoke("get_config_text"); } catch (e) { toast("" + e); }
+  };
+  $("cfg-save").onclick = async () => {
+    try {
+      await invoke("save_config_text", { text: $("cfg").value });
+      toast("Saved. Restart the app to apply.");
+    } catch (e) { toast("Invalid config: " + e); }
+  };
+  $("cfg-open").onclick = () => invoke("open_config_dir");
+</script>
+</body>
+</html>

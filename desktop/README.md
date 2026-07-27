@@ -1,50 +1,77 @@
-# Revolution desktop shell (Windows 11) — bring-up guide
+# Revolution desktop shell (Windows 11)
 
-The Tauri v2 shell is intentionally **not** in the cargo workspace yet: it depends on Windows-only crates and WebView2, so it can't build in the Linux container that authored this repo. Everything below wires real OS inputs into `revolution-core`, whose interfaces are already tested (see `docs/VALIDATION.md`).
+The Tauri v2 shell is **implemented** (Phase 1 bring-up). It wires real OS
+inputs into the tested `revolution-core` engine:
 
-## Prerequisites (on the Windows machine)
+```
+desktop/
+├── ui/                  # static frontend (no bundler): pet overlay + panel
+│   ├── index.html       #   the pet: state animations, speech bubble, capture dot
+│   └── panel.html       #   transcript, typed asks, latency ledger, keys, config
+└── src-tauri/
+    ├── tauri.conf.json  # pet (transparent/always-on-top) + panel windows
+    └── src/
+        ├── main.rs      # entrypoint, tauri commands, --smoke mode
+        ├── runloop.rs   # THE loop: owns Orchestrator/Transcript/MemoryStore,
+        │                #   executes Actions, mirrors state to the UI
+        ├── capture.rs   # WGC monitor capture → luma dHash → ChangeGate →
+        │                #   JPEG → KeyframeRing (RAM only)
+        ├── hotkey.rs    # WH_KEYBOARD_LL push-to-talk hook (PgUp default)
+        ├── mic.rs       # cpal/WASAPI always-open input, retained while PTT held
+        ├── tts.rs       # WinRT SpeechSynthesizer (zero-key) → rodio sink,
+        │                #   sentence streaming + barge-in
+        ├── stt.rs       # batch Whisper via any OpenAI-compatible endpoint
+        ├── llm.rs       # reqwest streaming of core's HttpRequestSpec → SSE →
+        │                #   normalized events; sentence chunker feeds TTS
+        ├── duck.rs      # IAudioSessionManager2 per-app ducking (25%) + restore
+        ├── gamewatch.rs # foreground exe → Steam manifests / detectable DB ladder
+        ├── config_io.rs # %APPDATA%\revolution\config.toml + Credential Manager
+        └── smoke.rs     # --smoke: headless hardware validation
+```
 
-- Rust (stable) + `cargo install create-tauri-app tauri-cli`
-- Node 20+ (UI dev server), WebView2 runtime (ships with Win11)
-
-## Scaffold
+## Run it
 
 ```powershell
-# from the repo root
-cargo create-tauri-app desktop --template vanilla-ts   # or svelte/react
-# add to the workspace: edit /Cargo.toml members += "desktop/src-tauri"
-cargo add --package desktop revolution-core --path ../core
+# from the repo root — dev build, real windows
+cargo run -p revolution-desktop
+
+# headless hardware check first (capture, TTS voice, mic, audio sessions):
+cargo run -p revolution-desktop -- --smoke
 ```
 
-## Crate wiring map (core API ↔ OS glue)
+First launch writes the annotated example config to
+`%APPDATA%\revolution\config.toml` and shows the pet bottom-right:
 
-| Shell component | Windows tech | Feeds / consumes in `revolution-core` |
-|---|---|---|
-| Capture service | `windows-capture` crate (WGC) targeting the game HWND; GPU downscale; libjpeg-turbo (`turbojpeg` crate) | build `GrayThumb` thumbnails → `dhash64` → `ChangeGate::decide` → `KeyframeRing::push` |
-| Hotkey | `WH_KEYBOARD_LL` hook via `rdev` (dedicated thread); Tauri global-shortcut as first attempt | `Orchestrator::handle(PttDown/PttUp)` → execute returned `Action`s |
-| Mic + playback | `cpal` (WASAPI); duck game session via `IAudioSessionManager2`/`ISimpleAudioVolume` (`windows` crate) on `Action::DuckGameAudio` | STT websocket frames out; TTS audio in; `TtsFirstAudio`/`PlaybackFinished` events back |
-| STT/TTS clients | `tokio-tungstenite` websockets (Deepgram / Cartesia or ElevenLabs) | `SttFinal` event; sentence-chunker feeds TTS from `StreamEvent::TextDelta` |
-| LLM transport | `reqwest` streaming | execute `HttpRequestSpec` from `provider_for(kind).build_request(...)`; pipe body chunks into `SseAssembler` + `parse_sse` |
-| Game detector | `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` → exe path; Discord detectable DB (cache JSON); Steam library scan | `match_exe`, `parse_appmanifest`, `exe_in_installdir` → `MemoryStore::get_or_create_game` |
-| Memory | app-data SQLite file; `fastembed` (bge-small int8) implementing the `Embedder` trait | `MemoryStore::open(path, embedder)` |
-| Pet + panel windows | Tauri: `transparent: true`, `decorations: false`, `alwaysOnTop: true`, `skipTaskbar: true`; ~60Hz cursor poll toggling `set_ignore_cursor_events`; `WS_EX_NOACTIVATE` | render `Action::SetPet(state)`; show `TextDelta` in the speech bubble |
-| Config/settings | `config.toml` in app-data; API keys in Windows Credential Manager (`keyring` crate; `keyring:` refs in the TOML) | `AppConfig::from_toml` / `AppConfig::example_toml()` |
+1. **Click the pet** → panel opens.
+2. Paste your model key under **API keys** (stored in Windows Credential
+   Manager, never on disk) — the example config's `roles.qa` block points at
+   xAI Grok; switch the block for Gemini/OpenAI/Claude per the comments.
+3. Restart the app. Type a question in the panel — you should hear the answer
+   through the built-in Windows voice (zero extra keys needed).
+4. For voice *input*, add `[voice.stt]` (Groq's free Whisper tier works) and
+   hold **PgUp** to talk.
 
-## Suggested window config (tauri.conf.json fragment)
+## What the shell guarantees
 
-```json
-{
-  "app": {
-    "windows": [
-      { "label": "pet",   "transparent": true, "decorations": false, "alwaysOnTop": true,
-        "skipTaskbar": true, "shadow": false, "width": 200, "height": 200, "resizable": false },
-      { "label": "panel", "transparent": true, "decorations": false, "alwaysOnTop": true,
-        "skipTaskbar": true, "visible": false, "width": 420, "height": 640 }
-    ]
-  }
-}
-```
+- **Privacy**: frames live only in the RAM ring; they leave the machine only
+  when you ask a question (`upload_on_ask_only`). With
+  `game_foreground_only = true` (default) capture pauses whenever the
+  foreground app isn't a detected game. The pet + panel windows are excluded
+  from capture (`WDA_EXCLUDEFROMCAPTURE`), so Rev never sees itself.
+- **Latency ledger**: every voice turn emits release→first-audio timing
+  split into STT / LLM-TTFT / TTS, shown in the panel against the 2 s budget.
+- **Barge-in**: PgUp while Rev is speaking stops playback, aborts the
+  in-flight stream, and starts listening again.
+- **Zero-key floor**: with no keys at all the app still runs — typed
+  questions + Windows TTS; each key you add upgrades a stage (Whisper STT,
+  better models, later streaming voices).
 
-## Phase 1 exit test (from docs/ROADMAP.md)
+## Not yet wired (Phase 2+)
 
-Run a game in borderless windowed, hold PgUp, ask a question about what's on screen, release: correct spoken answer < 2s p50 (debug overlay shows the per-stage ledger from `LatencyMarks::report()`), and PresentMon shows no measurable FPS delta with the app running.
+- Session-end summarizer + `remember`/`update_profile` model tools (the
+  panel's manual "Remember something" box writes the same store today).
+- fastembed embeddings (deterministic `HashEmbedder` stands in — retrieval
+  is keyword-dominant until then).
+- Discord detectable DB auto-download (drop a `detectable.json` into
+  `%APPDATA%\revolution` to enable that ladder step today), Deepgram
+  streaming STT, ElevenLabs/Cartesia TTS, hype mode, deep-research lane.

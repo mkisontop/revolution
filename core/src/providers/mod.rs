@@ -126,7 +126,8 @@ pub enum StreamEvent {
 
 /// Streaming adapters keep a little per-response state (finish reasons,
 /// usage accumulation), so parsing is `&mut self`. Create one per request.
-pub trait ChatProvider {
+/// `Send` so the shell can drive the stream from an async task.
+pub trait ChatProvider: Send {
     fn build_request(&self, cfg: &ProviderConfig, req: &ChatRequest) -> HttpRequestSpec;
     fn parse_sse(&mut self, msg: &sse::SseMessage) -> Vec<StreamEvent>;
 }

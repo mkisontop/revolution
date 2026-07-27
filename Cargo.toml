@@ -1,3 +1,7 @@
 [workspace]
-members = ["core"]
+members = ["core", "desktop/src-tauri"]
 resolver = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

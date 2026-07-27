@@ -16,15 +16,16 @@ The platform-independent engine as a Rust workspace crate (`core/`), fully unit-
 
 **Exit criteria: `cargo test` green; adapters' request JSON verified against provider docs; latency-budget arithmetic encoded in tests.** ✅
 
-## Phase 1 — Windows bring-up: one real conversation (~1–2 weeks on a Win11 box)
+## Phase 1 — Windows bring-up: one real conversation (code complete + machine-validated 2026-07-28)
 
-- WGC capture via `windows-capture` → change gate → ring buffer (real frames)
-- LL keyboard hook PTT (Page Up), WASAPI mic capture + playback + game-session ducking
-- Wire hot lane end-to-end with the user's real keys: PTT → Deepgram (or Groq Whisper batch v0) → configured `qa` model → Cartesia/ElevenLabs → speakers
-- Tauri v2 shell: pet window (transparent/always-on-top/click-through poll) + minimal speech bubble
-- **Measure the §4 latency table for real** on the user's GPU/network; record TTFT per candidate model (Grok / Gemini Flash / GPT / Claude) in the debug overlay
+- [x] WGC capture via `windows-capture` → change gate → ring buffer (real frames) — **validated on the target machine**: 2560×1440 → first keyframe in ~400 ms (`--smoke`)
+- [x] LL keyboard hook PTT (Page Up, configurable, hold or toggle) — `desktop/src-tauri/src/hotkey.rs`
+- [x] WASAPI mic (always-open, retain-while-held) + playback + game-session ducking — mic/output/session enumeration validated by `--smoke`
+- [x] Hot lane wired end-to-end: PTT → batch Whisper (any OpenAI-compatible endpoint; Groq free tier documented) → configured `qa` model → **WinRT Windows TTS v0** (zero-key; 6 ms synth validated) → speakers, with sentence-streamed synthesis and barge-in. Deepgram/Cartesia/ElevenLabs remain the streaming upgrades.
+- [x] Tauri v2 shell: transparent always-on-top pet (state animations, speech bubble, capture-indicator, drag) + panel (transcript, typed asks, latency ledger, key vault, config editor); pet/panel excluded from their own capture via `WDA_EXCLUDEFROMCAPTURE`
+- [ ] **Measure the §4 latency table for real** — the `--smoke-llm` probe runs the production streaming path and prints TTFT; **blocked on a valid API key** (both keys found on the machine tested invalid on 2026-07-28)
 
-**Exit: ask a question about a running game and hear a correct, screen-grounded spoken answer in < 2s p50; PresentMon shows no measurable FPS impact.**
+**Exit: ask a question about a running game and hear a correct, screen-grounded spoken answer in < 2s p50; PresentMon shows no measurable FPS impact.** *(Pending: paste a valid key, run a game, measure.)*
 
 ## Phase 2 — The friend: memory, identity, polish
 

@@ -15,6 +15,8 @@ pub struct AppConfig {
     pub hotkey: Hotkey,
     pub roles: Roles,
     #[serde(default)]
+    pub voice: Voice,
+    #[serde(default)]
     pub privacy: Privacy,
     #[serde(default)]
     pub budget: Budget,
@@ -54,12 +56,23 @@ pub struct Roles {
     pub realtime: Option<RealtimeRole>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RealtimeRole {
     pub model: String,
     #[serde(default = "default_voice")]
     pub voice: String,
     pub api_key: String,
+}
+
+/// Debug must never leak the API key into logs.
+impl std::fmt::Debug for RealtimeRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealtimeRole")
+            .field("model", &self.model)
+            .field("voice", &self.voice)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 fn default_voice() -> String {
@@ -110,6 +123,82 @@ fn default_cap() -> f64 {
 
 fn default_true() -> bool {
     true
+}
+
+/// Voice I/O for the desktop shell. Everything has zero-key defaults: TTS
+/// uses the built-in Windows voice, and when `stt` is absent the shell falls
+/// back to typed questions in the panel.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Voice {
+    #[serde(default)]
+    pub stt: Option<Stt>,
+    #[serde(default)]
+    pub tts: Tts,
+}
+
+/// Batch speech-to-text against an OpenAI-compatible
+/// `/audio/transcriptions` endpoint (Groq or OpenAI Whisper — Groq's free
+/// tier is the v0 default). Streaming STT (Deepgram) layers in later.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Stt {
+    #[serde(default = "default_stt_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_stt_model")]
+    pub model: String,
+    pub api_key: String,
+    /// ISO-639-1 hint, e.g. "en"; omit to auto-detect.
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+/// Debug must never leak the API key into logs.
+impl std::fmt::Debug for Stt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Stt")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &"<redacted>")
+            .field("language", &self.language)
+            .finish()
+    }
+}
+
+fn default_stt_base_url() -> String {
+    "https://api.groq.com/openai/v1".to_string()
+}
+
+fn default_stt_model() -> String {
+    "whisper-large-v3-turbo".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tts {
+    #[serde(default)]
+    pub engine: TtsEngine,
+    /// Substring match against installed voice display names (e.g. "Zira").
+    #[serde(default)]
+    pub voice: Option<String>,
+    /// Speaking rate multiplier, 0.5–2.0 (1.0 = the voice's natural rate).
+    #[serde(default = "default_tts_rate")]
+    pub rate: f64,
+}
+
+impl Default for Tts {
+    fn default() -> Self {
+        Self { engine: TtsEngine::default(), voice: None, rate: default_tts_rate() }
+    }
+}
+
+fn default_tts_rate() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TtsEngine {
+    /// WinRT `SpeechSynthesizer`: offline, instant, no API key.
+    #[default]
+    Windows,
 }
 
 impl AppConfig {
@@ -186,6 +275,22 @@ max_output_tokens = 400
 # voice = "verse"
 # api_key = "keyring:revolution/realtime"
 
+# --- Voice I/O ---------------------------------------------------------------
+# Without [voice.stt] you can still type questions in the panel window.
+# Groq's free tier serves fast Whisper; any OpenAI-compatible
+# /audio/transcriptions endpoint works.
+
+# [voice.stt]
+# base_url = "https://api.groq.com/openai/v1"
+# model = "whisper-large-v3-turbo"
+# api_key = "keyring:revolution/stt"
+# language = "en"
+
+[voice.tts]
+engine = "windows"    # built-in Windows voice: offline, instant, zero-key
+# voice = "Zira"      # substring of an installed voice name; omit for default
+rate = 1.0
+
 [privacy]
 upload_on_ask_only = true
 hype_mode = false
@@ -250,5 +355,63 @@ mod tests {
         let cfg = AppConfig::from_toml(EXAMPLE_TOML).unwrap();
         let re = AppConfig::from_toml(&cfg.to_toml()).expect("roundtrip");
         assert_eq!(re.roles.qa.model, cfg.roles.qa.model);
+        assert_eq!(re.voice.tts.engine, cfg.voice.tts.engine);
+    }
+
+    #[test]
+    fn voice_defaults_to_zero_key_windows_tts_and_no_stt() {
+        let cfg = AppConfig::from_toml(
+            r#"
+            [roles.qa]
+            kind = "gemini"
+            model = "gemini-flash-latest"
+            api_key = "K"
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.voice.stt.is_none());
+        assert_eq!(cfg.voice.tts.engine, TtsEngine::Windows);
+        assert_eq!(cfg.voice.tts.rate, 1.0);
+        assert!(cfg.voice.tts.voice.is_none());
+    }
+
+    #[test]
+    fn stt_config_parses_with_endpoint_defaults_and_redacts_key() {
+        let cfg = AppConfig::from_toml(
+            r#"
+            [roles.qa]
+            kind = "gemini"
+            model = "m"
+            api_key = "K"
+
+            [voice.stt]
+            api_key = "gsk-STT-SECRET"
+            "#,
+        )
+        .unwrap();
+        let stt = cfg.voice.stt.as_ref().expect("stt present");
+        assert_eq!(stt.base_url, "https://api.groq.com/openai/v1");
+        assert_eq!(stt.model, "whisper-large-v3-turbo");
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("STT-SECRET"));
+    }
+
+    #[test]
+    fn realtime_role_debug_redacts_key() {
+        let cfg = AppConfig::from_toml(
+            r#"
+            [roles.qa]
+            kind = "gemini"
+            model = "m"
+            api_key = "K"
+
+            [roles.realtime]
+            model = "gpt-realtime-2.1"
+            api_key = "rt-REALTIME-SECRET"
+            "#,
+        )
+        .unwrap();
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("REALTIME-SECRET"));
     }
 }

@@ -1,0 +1,50 @@
+[package]
+name = "revolution-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Windows 11 shell for the Revolution AI gaming companion: WGC capture, PTT hook, WASAPI audio, streaming LLM transport, Tauri pet overlay."
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+revolution-core = { path = "../../core" }
+
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+
+windows-capture = "1.4"
+jpeg-encoder = "0.6"
+
+cpal = "0.15"
+rodio = { version = "0.19", default-features = false, features = ["wav"] }
+hound = "3.5"
+
+keyring = { version = "3", features = ["windows-native"] }
+dirs = "5"
+base64 = "0.22"
+winreg = "0.52"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_System_Com",
+    "Win32_Media_Audio",
+    "Media_SpeechSynthesis",
+    "Media_Core",
+    "Storage_Streams",
+    "Foundation",
+    "Foundation_Collections",
+]
