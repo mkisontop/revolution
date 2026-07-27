@@ -102,6 +102,9 @@ pub fn load_or_init() -> LoadedConfig {
     if let Some(s) = cfg.voice.stt.as_mut() {
         resolve_key("voice.stt", &mut s.api_key, &mut warnings);
     }
+    if let Some(k) = cfg.voice.tts.api_key.as_mut() {
+        resolve_key("voice.tts", k, &mut warnings);
+    }
 
     LoadedConfig { cfg, path, warnings, first_run }
 }

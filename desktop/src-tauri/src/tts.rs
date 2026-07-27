@@ -1,15 +1,22 @@
-//! Text-to-speech: WinRT `SpeechSynthesizer` (offline, zero-key) feeding a
-//! rodio/WASAPI sink. One thread owns both synthesis and playback so
-//! sentence ordering, `TtsFirstAudio` timing, and barge-in are trivially
-//! serialized.
+//! Text-to-speech: two engines behind one thread that owns synthesis AND
+//! playback (so sentence ordering, `TtsFirstAudio` timing, and barge-in are
+//! trivially serialized):
+//! - `windows`: WinRT `SpeechSynthesizer` — offline, instant, zero-key.
+//! - `openai_chat_audio`: audio-output chat model (OpenRouter
+//!   `openai/gpt-audio-mini` etc.) — natural voices, streamed PCM16@24kHz
+//!   appended to the sink as chunks arrive. Falls back to the Windows voice
+//!   per-sentence on any failure, so the pet never goes mute.
 
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
-use revolution_core::config::Tts;
+use base64::Engine as _;
+use futures_util::StreamExt;
+use revolution_core::config::{Tts, TtsEngine};
 use revolution_core::orchestrator::InputEvent;
+use revolution_core::providers::sse::SseAssembler;
 use windows::core::HSTRING;
 use windows::Media::SpeechSynthesis::SpeechSynthesizer;
 use windows::Storage::Streams::DataReader;
@@ -17,6 +24,104 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 use crate::msg::{LoopMsg, TtsCmd};
 use crate::util::now_ms;
+
+/// Sample rate of streamed model audio (OpenAI audio-out convention).
+pub const API_TTS_RATE: u32 = 24_000;
+
+/// Resolved chat-audio TTS settings (present + usable key).
+pub struct ApiTts {
+    pub base_url: String,
+    pub model: String,
+    pub voice: String,
+    pub api_key: String,
+}
+
+/// Extract usable chat-audio settings from config, or None (→ Windows
+/// engine). A `keyring:` key that failed to resolve counts as unusable.
+pub fn api_from_cfg(cfg: &Tts) -> Option<ApiTts> {
+    if cfg.engine != TtsEngine::OpenaiChatAudio {
+        return None;
+    }
+    let api_key = cfg.api_key.clone()?;
+    if api_key.trim().is_empty() || api_key.starts_with("keyring:") {
+        return None;
+    }
+    Some(ApiTts {
+        base_url: cfg
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
+        model: cfg.model.clone()?,
+        voice: cfg.voice.clone().unwrap_or_else(|| "marin".to_string()),
+        api_key,
+    })
+}
+
+/// Stream one sentence through the audio-output model. `on_chunk` receives
+/// decoded PCM16 samples as they arrive and returns false to abort
+/// (barge-in). Returns Ok(true) if aborted by the callback.
+pub async fn stream_tts_pcm(
+    client: &reqwest::Client,
+    api: &ApiTts,
+    text: &str,
+    mut on_chunk: impl FnMut(Vec<i16>) -> bool,
+) -> anyhow::Result<bool> {
+    let body = serde_json::json!({
+        "model": api.model,
+        "stream": true,
+        "modalities": ["text", "audio"],
+        "audio": {"voice": api.voice, "format": "pcm16"},
+        "messages": [
+            {"role": "system", "content":
+                "You are a text-to-speech engine. Say the user's message exactly \
+                 as written, with natural casual pacing. Add nothing, change nothing."},
+            {"role": "user", "content": text}
+        ]
+    });
+    let url = format!("{}/chat/completions", api.base_url.trim_end_matches('/'));
+    let resp = client
+        .post(url)
+        .bearer_auth(&api.api_key)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "TTS endpoint returned {status}: {}",
+            body.chars().take(300).collect::<String>()
+        );
+    }
+    let mut sse = SseAssembler::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        for msg in sse.push(&String::from_utf8_lossy(&chunk)) {
+            if msg.data.trim() == "[DONE]" {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&msg.data) else {
+                continue;
+            };
+            if let Some(b64) = v
+                .pointer("/choices/0/delta/audio/data")
+                .and_then(serde_json::Value::as_str)
+            {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                    let samples: Vec<i16> = bytes
+                        .chunks_exact(2)
+                        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                        .collect();
+                    if !samples.is_empty() && !on_chunk(samples) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
+}
 
 /// Create a synthesizer honoring the configured voice + rate.
 /// Returns (synth, description) — description feeds the panel status.
@@ -74,22 +179,27 @@ fn run(cfg: Tts, loop_tx: Sender<LoopMsg>, rx: Receiver<TtsCmd>) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
+    let api = api_from_cfg(&cfg);
+    let client = reqwest::Client::new();
     let synth = match make_synth(&cfg) {
-        Ok((s, _)) => s,
+        Ok((s, _)) => Some(s),
         Err(e) => {
-            eprintln!("tts unavailable: {e}");
-            // Drain forever so senders never block; report errors per utterance.
-            while let Ok(cmd) = rx.recv() {
-                if matches!(cmd, TtsCmd::EndOfUtterance) {
-                    let _ = loop_tx.send(LoopMsg::Input(InputEvent::Error {
-                        ms: now_ms(),
-                        what: "TTS unavailable".into(),
-                    }));
-                }
-            }
-            return;
+            eprintln!("windows tts unavailable: {e}");
+            None
         }
     };
+    if api.is_none() && synth.is_none() {
+        // No engine at all — drain so senders never block; error per utterance.
+        while let Ok(cmd) = rx.recv() {
+            if matches!(cmd, TtsCmd::EndOfUtterance) {
+                let _ = loop_tx.send(LoopMsg::Input(InputEvent::Error {
+                    ms: now_ms(),
+                    what: "TTS unavailable".into(),
+                }));
+            }
+        }
+        return;
+    }
     let Ok((_stream, stream_handle)) = rodio::OutputStream::try_default() else {
         eprintln!("tts: no audio output device");
         while let Ok(cmd) = rx.recv() {
@@ -121,7 +231,73 @@ fn run(cfg: Tts, loop_tx: Sender<LoopMsg>, rx: Receiver<TtsCmd>) {
                 if text.is_empty() {
                     continue;
                 }
-                let wav = match synth_wav(&synth, &text) {
+                // Natural chat-audio voice first (if configured): chunks are
+                // appended to the sink as they stream in.
+                let mut spoken = false;
+                if let Some(api_cfg) = &api {
+                    let result = crate::llm::rt().block_on(stream_tts_pcm(
+                        &client,
+                        api_cfg,
+                        &text,
+                        |samples| {
+                            // Barge-in can land mid-stream.
+                            while let Ok(c) = rx.try_recv() {
+                                if matches!(c, TtsCmd::Stop) {
+                                    return false;
+                                }
+                                pending.push_back(c);
+                            }
+                            let s = match &sink {
+                                Some(s) => s,
+                                None => match rodio::Sink::try_new(&stream_handle) {
+                                    Ok(new_sink) => {
+                                        sink = Some(new_sink);
+                                        sink.as_ref().unwrap()
+                                    }
+                                    Err(_) => return false,
+                                },
+                            };
+                            s.append(rodio::buffer::SamplesBuffer::new(
+                                1,
+                                API_TTS_RATE,
+                                samples,
+                            ));
+                            if !first_audio_sent {
+                                first_audio_sent = true;
+                                let _ = loop_tx.send(LoopMsg::Input(
+                                    InputEvent::TtsFirstAudio { ms: now_ms() },
+                                ));
+                            }
+                            true
+                        },
+                    ));
+                    match result {
+                        Ok(true) => {
+                            // Aborted by barge-in; the Stop was consumed above.
+                            if let Some(s) = sink.take() {
+                                s.stop();
+                            }
+                            first_audio_sent = false;
+                            pending.clear();
+                            continue;
+                        }
+                        Ok(false) => spoken = true,
+                        Err(e) => eprintln!(
+                            "chat-audio tts failed ({e:#}) — falling back to Windows voice"
+                        ),
+                    }
+                }
+                if spoken {
+                    continue;
+                }
+                let Some(win_synth) = &synth else {
+                    let _ = loop_tx.send(LoopMsg::Input(InputEvent::Error {
+                        ms: now_ms(),
+                        what: "TTS failed and no Windows voice fallback".into(),
+                    }));
+                    continue;
+                };
+                let wav = match synth_wav(win_synth, &text) {
                     Ok(w) => w,
                     Err(e) => {
                         let _ = loop_tx.send(LoopMsg::Input(InputEvent::Error {

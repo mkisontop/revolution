@@ -189,21 +189,52 @@ fn default_stt_model() -> String {
     "whisper-large-v3-turbo".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Tts {
     #[serde(default)]
     pub engine: TtsEngine,
-    /// Substring match against installed voice display names (e.g. "Zira").
+    /// Windows: substring match against installed voice display names
+    /// (e.g. "Zira"). Chat-audio: the provider voice name (e.g. "marin").
     #[serde(default)]
     pub voice: Option<String>,
-    /// Speaking rate multiplier, 0.5–2.0 (1.0 = the voice's natural rate).
+    /// Windows-only speaking rate multiplier, 0.5–2.0.
     #[serde(default = "default_tts_rate")]
     pub rate: f64,
+    /// `openai_chat_audio` only — OpenAI-compatible base URL.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// `openai_chat_audio` only — audio-output model id.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// `openai_chat_audio` only — `keyring:` refs supported.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 impl Default for Tts {
     fn default() -> Self {
-        Self { engine: TtsEngine::default(), voice: None, rate: default_tts_rate() }
+        Self {
+            engine: TtsEngine::default(),
+            voice: None,
+            rate: default_tts_rate(),
+            base_url: None,
+            model: None,
+            api_key: None,
+        }
+    }
+}
+
+/// Debug must never leak the API key into logs.
+impl std::fmt::Debug for Tts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tts")
+            .field("engine", &self.engine)
+            .field("voice", &self.voice)
+            .field("rate", &self.rate)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
     }
 }
 
@@ -217,6 +248,10 @@ pub enum TtsEngine {
     /// WinRT `SpeechSynthesizer`: offline, instant, no API key.
     #[default]
     Windows,
+    /// Audio-output chat model over an OpenAI-compatible endpoint
+    /// (OpenRouter `openai/gpt-audio-mini` etc.): natural voices, streamed
+    /// PCM16@24kHz; requires `stream: true` on OpenRouter.
+    OpenaiChatAudio,
 }
 
 impl AppConfig {
@@ -319,6 +354,15 @@ engine = "windows"    # built-in Windows voice: offline, instant, zero-key
 # voice = "Zira"      # substring of an installed voice name; omit for default
 rate = 1.0
 
+# Natural neural voice via an audio-output chat model (falls back to the
+# Windows voice automatically if the request fails):
+# [voice.tts]
+# engine = "openai_chat_audio"
+# base_url = "https://openrouter.ai/api/v1"
+# model = "openai/gpt-audio-mini"
+# voice = "marin"     # or cedar, coral, sage, alloy, …
+# api_key = "keyring:revolution/stt"
+
 [privacy]
 upload_on_ask_only = true
 hype_mode = false
@@ -401,6 +445,31 @@ mod tests {
         assert_eq!(cfg.voice.tts.engine, TtsEngine::Windows);
         assert_eq!(cfg.voice.tts.rate, 1.0);
         assert!(cfg.voice.tts.voice.is_none());
+    }
+
+    #[test]
+    fn chat_audio_tts_parses_and_redacts_key() {
+        let cfg = AppConfig::from_toml(
+            r#"
+            [roles.qa]
+            kind = "gemini"
+            model = "m"
+            api_key = "K"
+
+            [voice.tts]
+            engine = "openai_chat_audio"
+            base_url = "https://openrouter.ai/api/v1"
+            model = "openai/gpt-audio-mini"
+            voice = "marin"
+            api_key = "or-TTS-SECRET"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.voice.tts.engine, TtsEngine::OpenaiChatAudio);
+        assert_eq!(cfg.voice.tts.model.as_deref(), Some("openai/gpt-audio-mini"));
+        assert_eq!(cfg.voice.tts.voice.as_deref(), Some("marin"));
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("TTS-SECRET"));
     }
 
     #[test]

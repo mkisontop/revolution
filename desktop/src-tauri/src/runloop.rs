@@ -406,8 +406,10 @@ impl Loop {
             .unwrap_or_else(|| "New player — no profile yet.".to_string());
         let episode = self.game.as_ref().and_then(|g| g.episode.clone());
 
+        let today = crate::util::local_date_string();
         let req = self.builder.build(
             &self.pcfg,
+            Some(&today),
             &profile,
             episode.as_deref(),
             &memories,

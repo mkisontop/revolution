@@ -129,6 +129,46 @@ pub fn run() -> i32 {
         }
     }
 
+    // ---- chat-audio tts (when configured) ----------------------------------
+    if let Some(api) = tts::api_from_cfg(&loaded.cfg.voice.tts) {
+        section("tts (chat-audio natural voice)");
+        println!("engine     : {} — voice '{}'", api.model, api.voice);
+        let client = reqwest::Client::new();
+        let t = Instant::now();
+        let mut pcm: Vec<i16> = Vec::new();
+        match crate::llm::rt().block_on(tts::stream_tts_pcm(
+            &client,
+            &api,
+            "The natural voice is online and ready to go.",
+            |s| {
+                pcm.extend(s);
+                true
+            },
+        )) {
+            Ok(_) => {
+                println!(
+                    "OK         : {} KB pcm in {} ms",
+                    pcm.len() * 2 / 1024,
+                    t.elapsed().as_millis()
+                );
+                if let Ok((_stream, handle)) = rodio::OutputStream::try_default() {
+                    if let Ok(sk) = rodio::Sink::try_new(&handle) {
+                        sk.append(rodio::buffer::SamplesBuffer::new(1, tts::API_TTS_RATE, pcm));
+                        let t = Instant::now();
+                        while !sk.empty() && t.elapsed() < Duration::from_secs(12) {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        println!("playback   : OK (you should have heard the natural voice)");
+                    }
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                println!("FAIL       : {e:#}");
+            }
+        }
+    }
+
     // ---- mic ---------------------------------------------------------------
     section("mic (cpal/WASAPI)");
     let m = mic::spawn();

@@ -130,10 +130,15 @@ impl PromptBuilder {
         Self { system_core: system_core.into() }
     }
 
+    /// `today` is the real local date, e.g. "Monday, July 28 2026" — models
+    /// otherwise guess dates from their training cutoff. It lives in the
+    /// context block (stable within a session; rolls at midnight), never in
+    /// the frozen system core.
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &self,
         cfg: &PromptConfig,
+        today: Option<&str>,
         profile_md: &str,
         last_episode: Option<&str>,
         retrieved_facts: &[String],
@@ -153,7 +158,11 @@ impl PromptBuilder {
             .collect();
         turns.push(Turn::User { text: question.to_string(), images: frames });
 
-        let mut context_block = format!("## Player profile\n{profile_md}\n");
+        let mut context_block = String::new();
+        if let Some(t) = today {
+            context_block.push_str(&format!("## Today\n{t}\n\n"));
+        }
+        context_block.push_str(&format!("## Player profile\n{profile_md}\n"));
         if let Some(ep) = last_episode {
             context_block.push_str(&format!("\n## Last session\n{ep}\n"));
         }
@@ -231,14 +240,28 @@ mod tests {
     fn frozen_prefix_is_byte_stable_across_turns() {
         let b = builder();
         let cfg = PromptConfig::default();
+        let today = Some("Monday, July 28 2026");
         let mut tr = Transcript::new();
-        let r1 = b.build(&cfg, "profile v1", Some("ep1"), &[], &tr, "q1", vec![img()]);
+        let r1 = b.build(&cfg, today, "profile v1", Some("ep1"), &[], &tr, "q1", vec![img()]);
         tr.push_user("q1", vec![]);
         tr.push_assistant("a1");
-        let r2 = b.build(&cfg, "profile v1", Some("ep1"), &[], &tr, "q2", vec![img()]);
+        let r2 = b.build(&cfg, today, "profile v1", Some("ep1"), &[], &tr, "q2", vec![img()]);
         // Cache anchors must be byte-identical while the session context is stable.
         assert_eq!(r1.system, r2.system);
         assert_eq!(r1.context_block, r2.context_block);
+    }
+
+    #[test]
+    fn real_date_lands_in_context_block_not_system() {
+        let b = builder();
+        let cfg = PromptConfig::default();
+        let tr = Transcript::new();
+        let r = b.build(&cfg, Some("Tuesday, July 28 2026"), "p", None, &[], &tr, "what day is it?", vec![]);
+        assert!(r.context_block.contains("## Today\nTuesday, July 28 2026"));
+        assert!(!r.system.contains("July 28"), "date must not poison the frozen core");
+        // Omitted → no Today section at all.
+        let r = b.build(&cfg, None, "p", None, &[], &tr, "q", vec![]);
+        assert!(!r.context_block.contains("## Today"));
     }
 
     #[test]
@@ -246,7 +269,7 @@ mod tests {
         let b = builder();
         let cfg = PromptConfig::default();
         let tr = Transcript::new();
-        let r = b.build(&cfg, "p", None, &[], &tr, "q", vec![img(), img(), img(), img(), img()]);
+        let r = b.build(&cfg, None, "p", None, &[], &tr, "q", vec![img(), img(), img(), img(), img()]);
         let Turn::User { images, .. } = r.turns.last().unwrap() else {
             panic!("last turn must be the user question");
         };
@@ -259,7 +282,7 @@ mod tests {
         let cfg = PromptConfig::default();
         let tr = Transcript::new();
         let facts = vec!["dex build, level 34".to_string()];
-        let r = b.build(&cfg, "p", None, &facts, &tr, "q", vec![]);
+        let r = b.build(&cfg, None, "p", None, &facts, &tr, "q", vec![]);
         assert!(!r.system.contains("dex build"));
         assert!(!r.context_block.contains("dex build"));
         let note_idx = r.turns.iter().position(|t| matches!(t, Turn::SystemNote { text } if text.contains("dex build")));

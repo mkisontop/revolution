@@ -17,6 +17,27 @@ pub fn now_ms() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+/// Real local date for the prompt context block, e.g. "Monday, July 28 2026"
+/// — without it models confidently answer date questions from their
+/// training cutoff.
+pub fn local_date_string() -> String {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    const DAYS: [&str; 7] =
+        ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const MONTHS: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July", "August", "September",
+        "October", "November", "December",
+    ];
+    let st = unsafe { GetLocalTime() };
+    format!(
+        "{}, {} {} {}",
+        DAYS[(st.wDayOfWeek as usize) % 7],
+        MONTHS[(st.wMonth as usize).clamp(1, 12) - 1],
+        st.wDay,
+        st.wYear
+    )
+}
+
 /// Map a config hotkey name (config.toml `[hotkey] ptt`) to a Win32 virtual
 /// key code. Names are case-insensitive.
 pub fn vk_from_name(name: &str) -> Option<u32> {

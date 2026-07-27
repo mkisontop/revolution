@@ -112,7 +112,17 @@ fn full_ptt_turn_across_all_modules() {
     let transcript = Transcript::new();
     let profile = store.get_profile(game).unwrap().unwrap();
     let episode = store.latest_episode(game).unwrap();
-    let req = builder.build(&pcfg, &profile, episode.as_deref(), &memories, &transcript, question, frames);
+    let req = builder.build(
+        &pcfg,
+        Some("Monday, July 28 2026"),
+        &profile,
+        episode.as_deref(),
+        &memories,
+        &transcript,
+        question,
+        frames,
+    );
+    assert!(req.context_block.contains("Monday, July 28 2026"));
 
     assert!(req.context_block.contains("Volcano-side base"));
     assert!(req.context_block.contains("caught Anubis"));
