@@ -136,11 +136,17 @@ pub struct Voice {
     pub tts: Tts,
 }
 
-/// Batch speech-to-text against an OpenAI-compatible
-/// `/audio/transcriptions` endpoint (Groq or OpenAI Whisper — Groq's free
-/// tier is the v0 default). Streaming STT (Deepgram) layers in later.
+/// Batch speech-to-text. Two wire shapes, one config:
+/// - `openai_compat_batch`: multipart `/audio/transcriptions` (Groq/OpenAI
+///   Whisper).
+/// - `openai_chat_audio`: the clip rides as an `input_audio` content part in
+///   a chat completion (OpenRouter-style audio models — e.g.
+///   `google/gemini-2.5-flash-lite`).
+/// Streaming STT (Deepgram) layers in later.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Stt {
+    #[serde(default)]
+    pub kind: SttKind,
     #[serde(default = "default_stt_base_url")]
     pub base_url: String,
     #[serde(default = "default_stt_model")]
@@ -151,10 +157,22 @@ pub struct Stt {
     pub language: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SttKind {
+    /// Multipart POST to `{base_url}/audio/transcriptions`.
+    #[default]
+    OpenaiCompatBatch,
+    /// JSON chat completion with an `input_audio` part to
+    /// `{base_url}/chat/completions`; the model replies with the transcript.
+    OpenaiChatAudio,
+}
+
 /// Debug must never leak the API key into logs.
 impl std::fmt::Debug for Stt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Stt")
+            .field("kind", &self.kind)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("api_key", &"<redacted>")
@@ -279,12 +297,20 @@ max_output_tokens = 400
 
 # --- Voice I/O ---------------------------------------------------------------
 # Without [voice.stt] you can still type questions in the panel window.
-# Groq's free tier serves fast Whisper; any OpenAI-compatible
-# /audio/transcriptions endpoint works.
 
+# Whisper batch (Groq free tier / OpenAI):
 # [voice.stt]
+# kind = "openai_compat_batch"
 # base_url = "https://api.groq.com/openai/v1"
 # model = "whisper-large-v3-turbo"
+# api_key = "keyring:revolution/stt"
+# language = "en"
+
+# Audio-input chat model (OpenRouter — no Whisper endpoint there):
+# [voice.stt]
+# kind = "openai_chat_audio"
+# base_url = "https://openrouter.ai/api/v1"
+# model = "google/gemini-2.5-flash-lite"
 # api_key = "keyring:revolution/stt"
 # language = "en"
 

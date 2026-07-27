@@ -22,7 +22,8 @@ impl MicHandle {
         self.recording.store(true, Ordering::Relaxed);
     }
 
-    /// Stop retaining and return the take as a 16-bit mono WAV, or None if
+    /// Stop retaining and return the take as a 16-bit mono WAV (downsampled
+    /// to 16 kHz — plenty for speech, ~3× smaller upload), or None if
     /// nothing usable was captured.
     pub fn stop_take_wav(&self) -> Option<Vec<u8>> {
         self.recording.store(false, Ordering::Relaxed);
@@ -31,6 +32,12 @@ impl MicHandle {
         if rate == 0 || samples.len() < (rate / 4) as usize {
             return None; // under ~250ms of audio — nothing intelligible
         }
+        const STT_RATE: u32 = 16_000;
+        let (samples, rate) = if rate > STT_RATE {
+            (resample_linear(&samples, rate, STT_RATE), STT_RATE)
+        } else {
+            (samples, rate)
+        };
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: rate,
@@ -49,6 +56,21 @@ impl MicHandle {
         }
         Some(cursor.into_inner())
     }
+}
+
+/// Linear-interpolation resampler — speech-grade, allocation-light.
+fn resample_linear(src: &[f32], from: u32, to: u32) -> Vec<f32> {
+    let out_len = (src.len() as u64 * to as u64 / from as u64) as usize;
+    let step = from as f64 / to as f64;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let pos = i as f64 * step;
+        let i0 = pos as usize;
+        let i1 = (i0 + 1).min(src.len() - 1);
+        let frac = (pos - i0 as f64) as f32;
+        out.push(src[i0] * (1.0 - frac) + src[i1] * frac);
+    }
+    out
 }
 
 /// Open the default input device on a dedicated thread (cpal streams are not

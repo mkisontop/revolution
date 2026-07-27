@@ -142,6 +142,50 @@ pub fn run() -> i32 {
         Err(e) => println!("warn       : {e} (ducking may not work)"),
     }
 
+    // ---- voice input loopback (opt-in: --smoke-stt) ------------------------
+    if std::env::args().any(|a| a == "--smoke-stt") {
+        section("voice input loopback (--smoke-stt)");
+        match loaded.cfg.voice.stt.clone().filter(|_| config_io::stt_ready(&loaded.cfg)) {
+            Some(stt_cfg) => {
+                // Synthesize a spoken question, then run it through the real
+                // transcription path — no human mic needed.
+                let spoken = "Which pal is best for mining coal in Palworld?";
+                match tts::make_synth(&loaded.cfg.voice.tts)
+                    .and_then(|(s, _)| tts::synth_wav(&s, spoken))
+                {
+                    Ok(wav) => {
+                        println!("stt        : {:?} / {}", stt_cfg.kind, stt_cfg.model);
+                        println!("spoken     : \"{spoken}\" ({} KB wav)", wav.len() / 1024);
+                        let client = reqwest::Client::new();
+                        let t = Instant::now();
+                        match crate::llm::rt()
+                            .block_on(crate::stt::transcribe(&client, &stt_cfg, wav))
+                        {
+                            Ok(text) => {
+                                println!("transcript : \"{text}\" in {} ms", t.elapsed().as_millis());
+                                if text.to_lowercase().contains("coal") {
+                                    println!("OK         : transcript matches");
+                                } else {
+                                    failures += 1;
+                                    println!("FAIL       : transcript does not match the spoken text");
+                                }
+                            }
+                            Err(e) => {
+                                failures += 1;
+                                println!("FAIL       : {e:#}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        failures += 1;
+                        println!("FAIL synth : {e}");
+                    }
+                }
+            }
+            None => println!("skip       : [voice.stt] not configured or key missing"),
+        }
+    }
+
     // ---- live LLM lane (opt-in: --smoke-llm) -------------------------------
     if std::env::args().any(|a| a == "--smoke-llm") {
         section("live model lane (--smoke-llm)");
