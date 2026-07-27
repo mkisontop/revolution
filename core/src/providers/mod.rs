@@ -44,6 +44,14 @@ pub struct ProviderConfig {
     /// Anthropic-only knob (`output_config.effort`); ignored elsewhere.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Gemini 2.5-era knob (`thinkingConfig.thinkingBudget`): 0 disables
+    /// thinking, -1 = dynamic, N = token budget. Ignored elsewhere.
+    #[serde(default)]
+    pub thinking_budget: Option<i32>,
+    /// Gemini 3.x knob (`thinkingConfig.thinkingLevel`): "minimal" keeps the
+    /// hot voice lane inside the 2s budget. Ignored elsewhere.
+    #[serde(default)]
+    pub thinking_level: Option<String>,
 }
 
 fn default_max_output_tokens() -> u32 {
@@ -61,6 +69,8 @@ impl std::fmt::Debug for ProviderConfig {
             .field("enable_web_search", &self.enable_web_search)
             .field("max_output_tokens", &self.max_output_tokens)
             .field("effort", &self.effort)
+            .field("thinking_budget", &self.thinking_budget)
+            .field("thinking_level", &self.thinking_level)
             .finish()
     }
 }
@@ -154,6 +164,8 @@ mod tests {
             enable_web_search: false,
             max_output_tokens: 512,
             effort: None,
+            thinking_budget: None,
+            thinking_level: None,
         };
         let s = format!("{cfg:?}");
         assert!(!s.contains("SUPER-SECRET"));

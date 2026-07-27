@@ -161,6 +161,8 @@ mod tests {
             enable_web_search: true,
             max_output_tokens: 512,
             effort: Some("low".into()),
+            thinking_budget: None,
+            thinking_level: None,
         }
     }
 

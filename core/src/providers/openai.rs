@@ -135,6 +135,8 @@ mod tests {
             enable_web_search: search,
             max_output_tokens: 777,
             effort: None,
+            thinking_budget: None,
+            thinking_level: None,
         }
     }
 

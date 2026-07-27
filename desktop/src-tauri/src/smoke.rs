@@ -57,6 +57,7 @@ pub fn run() -> i32 {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    let mut probe_frame: Option<Vec<u8>> = None;
     if got {
         let ring = shared.ring.lock().unwrap();
         let kf = ring.latest().expect("keyframe present");
@@ -68,6 +69,7 @@ pub fn run() -> i32 {
         );
         let dims = *shared.last_dims.lock().unwrap();
         println!("frame      : {}x{}", dims.0, dims.1);
+        probe_frame = Some(kf.jpeg.clone());
     } else {
         failures += 1;
         println!("FAIL       : no keyframe within 5s (RDP session or WGC unavailable?)");
@@ -144,7 +146,7 @@ pub fn run() -> i32 {
     if std::env::args().any(|a| a == "--smoke-llm") {
         section("live model lane (--smoke-llm)");
         if config_io::qa_ready(&loaded.cfg) {
-            if !llm_probe(&loaded.cfg) {
+            if !llm_probe(&loaded.cfg, probe_frame) {
                 failures += 1;
             }
         } else {
@@ -161,23 +163,38 @@ pub fn run() -> i32 {
 
 /// One tiny live streamed request through the production transport
 /// (`llm::spawn_stream`) — proves endpoint, auth, SSE parsing, and measures
-/// real TTFT. Costs a few tokens; web search disabled; 30-token cap.
-fn llm_probe(cfg: &revolution_core::config::AppConfig) -> bool {
+/// real TTFT. When a captured keyframe is available it rides along, proving
+/// the capture→encode→vision chain live. Web search disabled; small cap.
+fn llm_probe(cfg: &revolution_core::config::AppConfig, frame: Option<Vec<u8>>) -> bool {
+    use base64::Engine;
     use revolution_core::orchestrator::InputEvent;
-    use revolution_core::providers::{ChatRequest, Turn};
+    use revolution_core::providers::{ChatRequest, ImageAttachment, Turn};
 
     use crate::msg::LoopMsg;
     use crate::util::now_ms;
 
     let mut qa = cfg.roles.qa.clone();
     qa.enable_web_search = false;
-    qa.max_output_tokens = 30;
+    qa.max_output_tokens = 80;
     println!("endpoint   : {:?} / {}", qa.kind, qa.model);
 
+    let turn = match frame {
+        Some(jpeg) => {
+            println!("vision     : attaching the live keyframe ({} KB)", jpeg.len() / 1024);
+            Turn::User {
+                text: "In one short sentence, what is on this screen?".into(),
+                images: vec![ImageAttachment {
+                    media_type: "image/jpeg".into(),
+                    base64_data: base64::engine::general_purpose::STANDARD.encode(&jpeg),
+                }],
+            }
+        }
+        None => Turn::User { text: "ping — reply with the single word: check".into(), images: Vec::new() },
+    };
     let req = ChatRequest {
-        system: "You are a connectivity probe. Reply with the single word: check".into(),
+        system: "You are a terse connectivity probe. Answer in at most one sentence.".into(),
         context_block: String::new(),
-        turns: vec![Turn::User { text: "ping".into(), images: Vec::new() }],
+        turns: vec![turn],
     };
 
     let (ltx, lrx) = std::sync::mpsc::channel::<LoopMsg>();

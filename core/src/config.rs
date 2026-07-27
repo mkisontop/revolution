@@ -241,6 +241,8 @@ max_output_tokens = 400
 # model = "gemini-flash-latest"
 # api_key = "keyring:revolution/qa"
 # enable_web_search = true
+# thinking_level = "minimal"      # Gemini 3.x: snappy voice turns
+# thinking_budget = 0             # Gemini 2.5-era equivalent
 
 # OpenAI:
 # [roles.qa]

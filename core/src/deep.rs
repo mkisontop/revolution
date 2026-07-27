@@ -68,6 +68,8 @@ mod tests {
             enable_web_search: false, // deep lane must force this on
             max_output_tokens: 2048,
             effort: None,
+            thinking_budget: None,
+            thinking_level: None,
         }
     }
 

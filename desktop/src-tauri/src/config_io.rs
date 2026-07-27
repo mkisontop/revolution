@@ -31,10 +31,20 @@ pub fn memory_db_path() -> PathBuf {
     config_dir().join("memory.sqlite")
 }
 
+/// Strip whitespace and invisible junk (UTF-8/UTF-16 BOMs, zero-width
+/// spaces) that rides along with pasted or piped keys. A BOM in an API key
+/// header cost an evening once — never again.
+fn clean_secret(s: &str) -> String {
+    s.trim_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '\u{feff}' | '\u{200b}' | '\u{200e}' | '\u{200f}')
+    })
+    .to_string()
+}
+
 /// Store a secret in Credential Manager under the `keyring:` namespace used
 /// by config.toml (e.g. name `revolution/qa`).
 pub fn save_secret(name: &str, value: &str) -> anyhow::Result<()> {
-    keyring::Entry::new(KEYRING_SERVICE, name)?.set_password(value)?;
+    keyring::Entry::new(KEYRING_SERVICE, name)?.set_password(&clean_secret(value))?;
     Ok(())
 }
 
@@ -44,7 +54,7 @@ fn resolve_key(slot: &str, key: &mut String, warnings: &mut Vec<String>) {
     };
     let entry_name = entry_name.trim().to_string();
     match keyring::Entry::new(KEYRING_SERVICE, &entry_name).and_then(|e| e.get_password()) {
-        Ok(secret) => *key = secret,
+        Ok(secret) => *key = clean_secret(&secret),
         Err(e) => warnings.push(format!(
             "{slot}: no secret stored for keyring:{entry_name} ({e}) — save it from the panel"
         )),

@@ -57,6 +57,15 @@ impl ChatProvider for Gemini {
             "contents": contents,
             "generationConfig": {"maxOutputTokens": cfg.max_output_tokens},
         });
+        // Thinking-by-default models blow the 2s voice budget unless capped:
+        // 2.5-era models take thinkingBudget (0 = off); 3.x takes
+        // thinkingLevel ("minimal" verified live on gemini-3.6-flash).
+        if let Some(budget) = cfg.thinking_budget {
+            body["generationConfig"]["thinkingConfig"]["thinkingBudget"] = json!(budget);
+        }
+        if let Some(level) = &cfg.thinking_level {
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"] = json!(level);
+        }
         if cfg.enable_web_search {
             body["tools"] = json!([{"google_search": {}}]);
         }
@@ -126,6 +135,8 @@ mod tests {
             enable_web_search: search,
             max_output_tokens: 256,
             effort: None,
+            thinking_budget: None,
+            thinking_level: None,
         }
     }
 
@@ -146,6 +157,26 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn thinking_knobs_wire_into_generation_config() {
+        // Absent by default — the model keeps its own thinking behavior.
+        let spec = Gemini::default().build_request(&cfg(false), &simple_req());
+        assert!(spec.body["generationConfig"].get("thinkingConfig").is_none());
+        // 2.5-era numeric budget (0 = disabled).
+        let mut c = cfg(false);
+        c.thinking_budget = Some(0);
+        let spec = Gemini::default().build_request(&c, &simple_req());
+        assert_eq!(spec.body["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0);
+        // 3.x level string — the hot-lane setting.
+        let mut c = cfg(false);
+        c.thinking_level = Some("minimal".into());
+        let spec = Gemini::default().build_request(&c, &simple_req());
+        assert_eq!(
+            spec.body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "minimal"
+        );
     }
 
     #[test]

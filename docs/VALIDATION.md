@@ -72,7 +72,7 @@ revolution-desktop --smoke            → PASS
 | TTS playback via rodio/WASAPI | audible, sink drained cleanly |
 | Mic (cpal/WASAPI) | `Microphone (GM305)` opened; always-open retain-while-held pattern working |
 | Audio render sessions visible for ducking | 6 sessions enumerable (`ISimpleAudioVolume` accessible) |
-| Live model lane (`--smoke-llm`, production streaming path) | transport chain **verified end-to-end** — correct provider URL, streamed SSE request, Credential Manager key resolution, clean error surfacing. Request rejected with `API_KEY_INVALID`: both keys found on the machine (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`) are expired. **TTFT measurement pending a valid key.** |
+| Live model lane (`--smoke-llm`, production streaming path) | **VERIFIED LIVE WITH VISION (2026-07-28, user's key, `gemini-3.6-flash`)**: a real captured keyframe (2560×1440 → 194 KB JPEG) was streamed to the model, which replied with a correct one-sentence description of the live Palworld session on screen. Cold one-shot: TTFT 2298 ms / total 2438 ms, 1127 tokens in / 32 out. `thinking_level = "minimal"` is required — default thinking added ~2.9 s TTFT and ate the token cap. Warm-connection in-app turns will be faster; further levers: flash-lite, smaller frames, release build. |
 
 Platform note: `MinimumUpdateIntervalSettings::Custom` requires Win11 24H2+ (this box is 23H2) — capture throttling is done in software (250 ms sampling) instead; documented in `capture.rs`.
 
