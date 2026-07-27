@@ -233,6 +233,12 @@ pub fn run() -> i32 {
             if !llm_probe(&loaded.cfg, probe_frame) {
                 failures += 1;
             }
+            if loaded.cfg.roles.qa.enable_web_search {
+                section("tool search (--smoke-llm)");
+                if !tool_search_probe(&loaded.cfg) {
+                    failures += 1;
+                }
+            }
         } else {
             println!("skip       : no usable roles.qa key");
         }
@@ -243,6 +249,65 @@ pub fn run() -> i32 {
         if failures == 0 { "PASS" } else { "FAIL" }
     );
     i32::from(failures > 0)
+}
+
+/// Ask something the model cannot know without searching, through the real
+/// tool loop: expect a web_search tool call, then a grounded final answer.
+fn tool_search_probe(cfg: &revolution_core::config::AppConfig) -> bool {
+    use revolution_core::orchestrator::InputEvent;
+    use revolution_core::providers::{ChatRequest, Turn};
+
+    use crate::msg::LoopMsg;
+    use crate::util::now_ms;
+
+    let qa = cfg.roles.qa.clone();
+    println!("endpoint   : {:?} / {} (web search on)", qa.kind, qa.model);
+    let req = ChatRequest {
+        system: "You are a gaming companion. If you are not fully certain of a \
+                 factual answer, use the web_search tool instead of guessing."
+            .into(),
+        context_block: String::new(),
+        turns: vec![Turn::User {
+            text: "What is the version number of Palworld's most recent patch, and what is one thing it changed?".into(),
+            images: Vec::new(),
+        }],
+    };
+    let (ltx, lrx) = std::sync::mpsc::channel::<LoopMsg>();
+    let (ttx, _trx_keepalive) = std::sync::mpsc::channel();
+    let t0 = now_ms();
+    let _handle = crate::llm::spawn_stream(reqwest::Client::new(), qa, req, ltx, ttx);
+
+    let mut text = String::new();
+    let mut searched = false;
+    loop {
+        match lrx.recv_timeout(Duration::from_secs(90)) {
+            Ok(LoopMsg::ToolActivity(w)) => {
+                searched = true;
+                println!("tool       : {w}");
+            }
+            Ok(LoopMsg::Delta(t)) => text.push_str(&t),
+            Ok(LoopMsg::Input(InputEvent::FirstToken { ms })) => {
+                println!("TTFT       : {} ms", ms.saturating_sub(t0));
+            }
+            Ok(LoopMsg::LlmDone { .. }) => {
+                println!("total      : {} ms", now_ms().saturating_sub(t0));
+                println!("reply      : {}", text.trim());
+                if !searched {
+                    println!("note       : model answered without searching (allowed, but check the reply)");
+                }
+                return !text.trim().is_empty();
+            }
+            Ok(LoopMsg::LlmFailed(e)) => {
+                println!("FAIL       : {e}");
+                return false;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                println!("FAIL       : no response within 90s");
+                return false;
+            }
+        }
+    }
 }
 
 /// One tiny live streamed request through the production transport
