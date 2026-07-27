@@ -18,10 +18,46 @@ pub async fn transcribe(
     wav: Vec<u8>,
     game: Option<&str>,
 ) -> anyhow::Result<String> {
-    match cfg.kind {
-        SttKind::OpenaiCompatBatch => whisper_batch(client, cfg, wav, game).await,
-        SttKind::OpenaiChatAudio => chat_audio(client, cfg, wav, game).await,
+    let raw = match cfg.kind {
+        SttKind::OpenaiCompatBatch => whisper_batch(client, cfg, wav, game).await?,
+        SttKind::OpenaiChatAudio => chat_audio(client, cfg, wav, game).await?,
+    };
+    Ok(sanitize_transcript(raw))
+}
+
+/// Defection guard: chat-audio "transcribers" sometimes ANSWER the speech
+/// instead of writing it down (observed live with multiple models — even
+/// speech-specialized ones — despite schema contracts). An assistant-shaped
+/// result becomes an empty transcript, which the orchestrator treats as
+/// "nothing heard" instead of feeding a second brain into the first.
+fn sanitize_transcript(t: String) -> String {
+    let text = t.trim();
+    // A push-to-talk question is never an essay.
+    if text.len() > 400 {
+        return String::new();
     }
+    let l = text.to_lowercase();
+    const TELLS: &[&str] = &[
+        "i'm sorry, but i can",
+        "i am sorry, but i can",
+        "i can't determine",
+        "i cannot determine",
+        "i can't assist",
+        "i can hear you clearly",
+        "yes, i can hear you",
+        "i'd be happy to help",
+        "i would be happy to help",
+        "how can i help you",
+        "let me know if",
+        "as an ai",
+        "it sounds like you",
+        "some of the best options",
+        "here are a few",
+    ];
+    if TELLS.iter().any(|tell| l.contains(tell)) {
+        return String::new();
+    }
+    text.to_string()
 }
 
 async fn chat_audio(
@@ -147,4 +183,35 @@ async fn whisper_batch(
     }
     let v: serde_json::Value = resp.json().await?;
     Ok(v["text"].as_str().unwrap_or_default().trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_transcript;
+
+    #[test]
+    fn real_defections_are_discarded() {
+        // Every string here was produced by a live "transcriber" answering
+        // the user's speech instead of transcribing it.
+        for defection in [
+            "I'm sorry, but I can’t determine the release date of the game from the audio alone. If you have any other details or need help with something else, let me know!",
+            "Yes, I can hear you clearly. Please go ahead with what you'd like to say.",
+            "For mining coal, you'll want to use a pal with high mining efficiency. Some of the best options include: 1. **Coalminer**: This pal is specifically designed for mining coal and has high mining efficiency. 2. **Miner**: A general mining pal that is also effective for coal mining. 3. **Rocky**: This pal has high mining efficiency and can also help with other mining tasks. As for upgrading your furnace, it's generally a good idea to do so as soon as possible. A higher-level furnace will allow you to smelt more coal at once and will also increase the efficiency of the smelting process.",
+        ] {
+            assert_eq!(sanitize_transcript(defection.into()), "", "should discard: {defection}");
+        }
+    }
+
+    #[test]
+    fn real_questions_survive_the_guard() {
+        for q in [
+            "Which Pal is best for mining coal in Palworld?",
+            "Sorry, what's the best pal for mining?",
+            "What date was this game released at?",
+            "Can you hear me clearly?",
+            "Should I bring Anubis or Digtoise against Astegon tonight?",
+        ] {
+            assert_eq!(sanitize_transcript(q.into()), q, "should keep: {q}");
+        }
+    }
 }

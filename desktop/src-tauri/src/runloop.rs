@@ -257,6 +257,7 @@ impl Loop {
             }
             LoopMsg::GameChanged { exe_path, game } => self.on_game_changed(exe_path, game),
             LoopMsg::RememberNote(text) => self.on_remember(text),
+            LoopMsg::Toast(text) => self.toast(text),
         }
     }
 
@@ -339,6 +340,13 @@ impl Loop {
                 llm::rt().spawn(async move {
                     match stt::transcribe(&client, &cfg, wav, game.as_deref()).await {
                         Ok(text) => {
+                            if text.is_empty() {
+                                // Nothing intelligible (or the defection guard
+                                // discarded an assistant-shaped result).
+                                let _ = tx.send(LoopMsg::Toast(
+                                    "Didn't catch that — hold the key and try again.".into(),
+                                ));
+                            }
                             let _ = tx.send(LoopMsg::Input(InputEvent::SttFinal {
                                 ms: now_ms(),
                                 text,

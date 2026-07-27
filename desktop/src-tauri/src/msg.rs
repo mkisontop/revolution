@@ -34,6 +34,8 @@ pub enum LoopMsg {
     },
     /// Panel asked to store a durable fact about the current game.
     RememberNote(String),
+    /// Show a toast without touching the orchestrator state.
+    Toast(String),
 }
 
 #[derive(Debug, Clone, Copy)]
