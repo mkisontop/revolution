@@ -335,8 +335,9 @@ impl Loop {
             (Some(wav), Some(cfg)) => {
                 let tx = self.loop_tx.clone();
                 let client = self.client.clone();
+                let game = self.game.as_ref().map(|g| g.name.clone());
                 llm::rt().spawn(async move {
-                    match stt::transcribe(&client, &cfg, wav).await {
+                    match stt::transcribe(&client, &cfg, wav, game.as_deref()).await {
                         Ok(text) => {
                             let _ = tx.send(LoopMsg::Input(InputEvent::SttFinal {
                                 ms: now_ms(),

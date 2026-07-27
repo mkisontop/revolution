@@ -10,22 +10,33 @@
 use base64::Engine;
 use revolution_core::config::{Stt, SttKind};
 
+/// `game` biases the transcriber toward in-game vocabulary (pal/boss/item
+/// names) — measured to matter for proper nouns.
 pub async fn transcribe(
     client: &reqwest::Client,
     cfg: &Stt,
     wav: Vec<u8>,
+    game: Option<&str>,
 ) -> anyhow::Result<String> {
     match cfg.kind {
-        SttKind::OpenaiCompatBatch => whisper_batch(client, cfg, wav).await,
-        SttKind::OpenaiChatAudio => chat_audio(client, cfg, wav).await,
+        SttKind::OpenaiCompatBatch => whisper_batch(client, cfg, wav, game).await,
+        SttKind::OpenaiChatAudio => chat_audio(client, cfg, wav, game).await,
     }
 }
 
-async fn chat_audio(client: &reqwest::Client, cfg: &Stt, wav: Vec<u8>) -> anyhow::Result<String> {
+async fn chat_audio(
+    client: &reqwest::Client,
+    cfg: &Stt,
+    wav: Vec<u8>,
+    game: Option<&str>,
+) -> anyhow::Result<String> {
     let lang_hint = cfg
         .language
         .as_ref()
         .map(|l| format!(" The speech is in language '{l}'."))
+        .unwrap_or_default();
+    let game_hint = game
+        .map(|g| format!(" Context: the speaker is playing the game {g}; expect its vocabulary."))
         .unwrap_or_default();
     let body = serde_json::json!({
         "model": cfg.model,
@@ -36,7 +47,8 @@ async fn chat_audio(client: &reqwest::Client, cfg: &Stt, wav: Vec<u8>) -> anyhow
             "content": [
                 {"type": "text", "text": format!(
                     "Transcribe this audio exactly. Output only the transcript text, \
-                     nothing else. If there is no clear speech, output nothing.{lang_hint}"
+                     nothing else. If there is no clear speech, output nothing.\
+                     {lang_hint}{game_hint}"
                 )},
                 {"type": "input_audio", "input_audio": {
                     "data": base64::engine::general_purpose::STANDARD.encode(&wav),
@@ -72,6 +84,7 @@ async fn whisper_batch(
     client: &reqwest::Client,
     cfg: &Stt,
     wav: Vec<u8>,
+    game: Option<&str>,
 ) -> anyhow::Result<String> {
     let part = reqwest::multipart::Part::bytes(wav)
         .file_name("question.wav")
@@ -83,6 +96,10 @@ async fn whisper_batch(
         .text("temperature", "0");
     if let Some(lang) = &cfg.language {
         form = form.text("language", lang.clone());
+    }
+    if let Some(g) = game {
+        // Whisper prompt biasing toward in-game vocabulary.
+        form = form.text("prompt", format!("A gaming question while playing {g}."));
     }
     let url = format!(
         "{}/audio/transcriptions",

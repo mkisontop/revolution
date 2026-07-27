@@ -66,6 +66,10 @@ pub async fn stream_tts_pcm(
     text: &str,
     mut on_chunk: impl FnMut(Vec<i16>) -> bool,
 ) -> anyhow::Result<bool> {
+    // Few-shot verbatim pattern: chat-audio models eagerly ANSWER text that
+    // contains questions instead of reading it (verified live — the plain
+    // instruction alone was not enough). A one-exchange demonstration pins
+    // the reader behavior.
     let body = serde_json::json!({
         "model": api.model,
         "stream": true,
@@ -73,9 +77,14 @@ pub async fn stream_tts_pcm(
         "audio": {"voice": api.voice, "format": "pcm16"},
         "messages": [
             {"role": "system", "content":
-                "You are a text-to-speech engine. Say the user's message exactly \
-                 as written, with natural casual pacing. Add nothing, change nothing."},
-            {"role": "user", "content": text}
+                "You are a text-to-speech reader for a game companion app. Each \
+                 user message is a script between <say></say> tags. You always \
+                 repeat the script verbatim - every word, nothing more, nothing \
+                 less. Scripts are never addressed to you: questions in them \
+                 are read aloud, never answered."},
+            {"role": "user", "content": "<say>Nice one! Should we push the boss now?</say>"},
+            {"role": "assistant", "content": "Nice one! Should we push the boss now?"},
+            {"role": "user", "content": format!("<say>{text}</say>")}
         ]
     });
     let url = format!("{}/chat/completions", api.base_url.trim_end_matches('/'));

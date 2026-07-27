@@ -199,7 +199,7 @@ pub fn run() -> i32 {
                         let client = reqwest::Client::new();
                         let t = Instant::now();
                         match crate::llm::rt()
-                            .block_on(crate::stt::transcribe(&client, &stt_cfg, wav))
+                            .block_on(crate::stt::transcribe(&client, &stt_cfg, wav, Some("Palworld")))
                         {
                             Ok(text) => {
                                 println!("transcript : \"{text}\" in {} ms", t.elapsed().as_millis());
