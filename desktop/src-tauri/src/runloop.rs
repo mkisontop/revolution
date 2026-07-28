@@ -378,6 +378,45 @@ impl Loop {
         }
     }
 
+    /// Frames for a question, with two guarantees the ring alone can't give:
+    /// (1) the fresh frame requested at PTT-down gets a bounded wait to
+    /// actually land (typed asks fire PTT-down and the question in the same
+    /// millisecond — without the wait they'd ship a pre-press ring state);
+    /// (2) if capture is paused because no game was detected, an explicit
+    /// ask runs a one-shot grab — asking IS the consent `upload_on_ask_only`
+    /// is about — and the privacy pause is restored right after.
+    fn collect_frames(&mut self) -> Vec<ImageAttachment> {
+        use std::sync::atomic::Ordering;
+        let capture_dead = self.capture.error.lock().unwrap().is_some();
+        let was_enabled = self.capture.enabled.load(Ordering::Relaxed);
+        if !was_enabled && !capture_dead {
+            self.capture.set_enabled(true);
+            self.capture.fresh_request.store(true, Ordering::Relaxed);
+        }
+        if !capture_dead {
+            let asked = self.orch.marks.ptt_down.unwrap_or_else(now_ms);
+            let deadline = now_ms() + if was_enabled { 500 } else { 900 };
+            while self.capture.last_ms.load(Ordering::Relaxed) < asked && now_ms() < deadline {
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        }
+        let frames: Vec<ImageAttachment> = {
+            let ring = self.capture.ring.lock().unwrap();
+            ring.select_for_question(self.pcfg.max_images_per_question, 5_000)
+                .into_iter()
+                .map(|kf| ImageAttachment {
+                    media_type: "image/jpeg".into(),
+                    base64_data: base64::engine::general_purpose::STANDARD.encode(&kf.jpeg),
+                })
+                .collect()
+        };
+        if !was_enabled && !capture_dead {
+            // Restore the privacy pause (this wipes the ring again).
+            self.capture.set_enabled(false);
+        }
+        frames
+    }
+
     fn send_chat(&mut self, question: String) {
         if !config_io::qa_ready(&self.cfg) {
             self.toast("No API key yet — open the panel and add your roles.qa key");
@@ -389,16 +428,7 @@ impl Loop {
         }
 
         // Frames: freshest + highest-change, capped by the prompt config.
-        let frames: Vec<ImageAttachment> = {
-            let ring = self.capture.ring.lock().unwrap();
-            ring.select_for_question(self.pcfg.max_images_per_question, 5_000)
-                .into_iter()
-                .map(|kf| ImageAttachment {
-                    media_type: "image/jpeg".into(),
-                    base64_data: base64::engine::general_purpose::STANDARD.encode(&kf.jpeg),
-                })
-                .collect()
-        };
+        let frames = self.collect_frames();
 
         let memories: Vec<String> = match (&self.store, &self.game) {
             (Some(store), Some(game)) => store
@@ -449,6 +479,14 @@ impl Loop {
         match game {
             Some((name, exe)) => {
                 if self.game.as_ref().map(|g| g.name.as_str()) == Some(name.as_str()) {
+                    // Back in the same game after an alt-tab. The None arm
+                    // paused capture on the way out, so re-arm it here —
+                    // early-returning without this left the pet permanently
+                    // blind for the rest of the session.
+                    if !self.capture.enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                        self.capture.set_enabled(true);
+                        self.refresh_status();
+                    }
                     return;
                 }
                 let ctx = self.store.as_ref().and_then(|store| {
