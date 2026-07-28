@@ -41,7 +41,10 @@ pub struct ProviderConfig {
     pub enable_web_search: bool,
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: u32,
-    /// Anthropic-only knob (`output_config.effort`); ignored elsewhere.
+    /// Reasoning effort: "minimal"/"low"/"medium"/"high". Sent as
+    /// `output_config.effort` (Anthropic) or `reasoning_effort`
+    /// (OpenAI-compatible, incl. GPT-5.x via OpenRouter or a local router).
+    /// Unset means the model's default, which for reasoning models is slow.
     #[serde(default)]
     pub effort: Option<String>,
     /// Gemini 2.5-era knob (`thinkingConfig.thinkingBudget`): 0 disables

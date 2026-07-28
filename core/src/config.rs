@@ -313,7 +313,9 @@ max_output_tokens = 400
 # kind = "anthropic"
 # model = "claude-opus-5"
 # api_key = "keyring:revolution/qa"
-# effort = "low"                  # snappy voice turns
+# effort = "low"                  # snappy voice turns; also works on
+#                                 # OpenAI-compatible reasoning models
+#                                 # (sent as reasoning_effort)
 # enable_web_search = true
 
 # --- Optional lanes ---------------------------------------------------------

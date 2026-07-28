@@ -62,6 +62,11 @@ impl ChatProvider for OpenAiCompat {
             "max_tokens": cfg.max_output_tokens,
             "messages": messages,
         });
+        // Reasoning models (GPT-5.x, o-series) default to slow deliberation;
+        // the voice lane wants the fast end of the dial.
+        if let Some(effort) = &cfg.effort {
+            body["reasoning_effort"] = json!(effort);
+        }
         if cfg.enable_web_search {
             if base.to_lowercase().contains("x.ai") {
                 body["search_parameters"] = json!({"mode": "auto"});
@@ -184,6 +189,22 @@ mod tests {
         assert_eq!(spec.url, "https://api.x.ai/v1/chat/completions");
         assert_eq!(spec.body["search_parameters"]["mode"], "auto");
         assert!(spec.body.get("web_search_options").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_sent_only_when_set() {
+        let p = OpenAiCompat::default();
+        assert!(p
+            .build_request(&cfg(None, false), &req_with_image())
+            .body
+            .get("reasoning_effort")
+            .is_none());
+        let mut c = cfg(None, false);
+        c.effort = Some("low".into());
+        assert_eq!(
+            p.build_request(&c, &req_with_image()).body["reasoning_effort"],
+            "low"
+        );
     }
 
     #[test]
