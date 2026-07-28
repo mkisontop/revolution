@@ -20,6 +20,42 @@ pub struct AppConfig {
     pub privacy: Privacy,
     #[serde(default)]
     pub budget: Budget,
+    #[serde(default)]
+    pub companion: Companion,
+}
+
+/// Personality knobs for the pet itself (all local behavior, no privacy
+/// surface): greetings, ambient cadence, and when it dozes off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Companion {
+    /// Say a short hello when a game comes into focus.
+    #[serde(default = "default_true")]
+    pub greet_on_game: bool,
+    /// Hype-mode cadence floor: never remark more often than this.
+    #[serde(default = "default_ambient_gap")]
+    pub ambient_min_gap_secs: u64,
+    /// With no game and no interaction for this long, the pet falls asleep
+    /// on screen (purely cosmetic). 0 disables.
+    #[serde(default = "default_sleep_after")]
+    pub sleep_after_secs: u64,
+}
+
+impl Default for Companion {
+    fn default() -> Self {
+        Self {
+            greet_on_game: true,
+            ambient_min_gap_secs: default_ambient_gap(),
+            sleep_after_secs: default_sleep_after(),
+        }
+    }
+}
+
+fn default_ambient_gap() -> u64 {
+    90
+}
+
+fn default_sleep_after() -> u64 {
+    180
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,11 +150,44 @@ impl Default for Privacy {
 pub struct Budget {
     #[serde(default = "default_cap")]
     pub monthly_usd_cap: f64,
+    /// Price of the qa model per **million** input tokens, USD. Leave both
+    /// prices at 0 for token-only metering with no cap enforcement (the app
+    /// cannot know arbitrary models' prices).
+    #[serde(default)]
+    pub usd_per_1m_input: f64,
+    #[serde(default)]
+    pub usd_per_1m_output: f64,
+}
+
+impl Budget {
+    /// Estimated cost of a month's usage; None when prices are unset.
+    pub fn estimate_usd(&self, input_tokens: u64, output_tokens: u64) -> Option<f64> {
+        if self.usd_per_1m_input <= 0.0 && self.usd_per_1m_output <= 0.0 {
+            return None;
+        }
+        Some(
+            input_tokens as f64 / 1e6 * self.usd_per_1m_input
+                + output_tokens as f64 / 1e6 * self.usd_per_1m_output,
+        )
+    }
+
+    /// True when the cap is known-exceeded (prices set and estimate ≥ cap).
+    pub fn over_cap(&self, input_tokens: u64, output_tokens: u64) -> bool {
+        self.monthly_usd_cap > 0.0
+            && self
+                .estimate_usd(input_tokens, output_tokens)
+                .map(|c| c >= self.monthly_usd_cap)
+                .unwrap_or(false)
+    }
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { monthly_usd_cap: default_cap() }
+        Self {
+            monthly_usd_cap: default_cap(),
+            usd_per_1m_input: 0.0,
+            usd_per_1m_output: 0.0,
+        }
     }
 }
 
@@ -372,12 +441,19 @@ rate = 1.0
 
 [privacy]
 upload_on_ask_only = true
-hype_mode = false
+hype_mode = false         # opt-in couch commentary between fights
 capture_indicator = true
 game_foreground_only = true
 
+[companion]
+greet_on_game = true      # short spoken hello when your game gets focus
+ambient_min_gap_secs = 90 # hype-mode never remarks more often than this
+sleep_after_secs = 180    # pet dozes off with no game + no interaction
+
 [budget]
 monthly_usd_cap = 25.0
+usd_per_1m_input = 0.0    # set your model's prices to enforce the cap;
+usd_per_1m_output = 0.0   # 0/0 = token-only metering, no enforcement
 "#;
 
 #[cfg(test)]
@@ -395,6 +471,21 @@ mod tests {
         assert!(cfg.roles.ambient.is_none());
         assert!(cfg.privacy.upload_on_ask_only);
         assert_eq!(cfg.budget.monthly_usd_cap, 25.0);
+        assert!(cfg.companion.greet_on_game);
+        assert_eq!(cfg.companion.ambient_min_gap_secs, 90);
+    }
+
+    #[test]
+    fn budget_estimates_and_cap() {
+        let b = Budget { monthly_usd_cap: 5.0, usd_per_1m_input: 1.0, usd_per_1m_output: 4.0 };
+        // 2M in + 0.5M out = 2 + 2 = 4 USD.
+        assert_eq!(b.estimate_usd(2_000_000, 500_000), Some(4.0));
+        assert!(!b.over_cap(2_000_000, 500_000));
+        assert!(b.over_cap(3_000_000, 500_000));
+        // Unknown prices → no estimate, never capped.
+        let unknown = Budget::default();
+        assert_eq!(unknown.estimate_usd(9_999_999, 9_999_999), None);
+        assert!(!unknown.over_cap(u64::MAX / 2, u64::MAX / 2));
     }
 
     #[test]

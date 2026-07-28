@@ -17,6 +17,23 @@ pub fn now_ms() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+/// Wall-clock epoch milliseconds — for store timestamps that must order
+/// correctly *across* sessions (episodes, facts). `now_ms()` is app-relative
+/// and resets every launch; never persist it.
+pub fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Local "YYYY-MM" key for the monthly usage meter.
+pub fn month_string() -> String {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let st = unsafe { GetLocalTime() };
+    format!("{:04}-{:02}", st.wYear, st.wMonth)
+}
+
 /// Real local date for the prompt context block, e.g. "Monday, July 28 2026"
 /// — without it models confidently answer date questions from their
 /// training cutoff.
@@ -36,6 +53,17 @@ pub fn local_date_string() -> String {
         st.wDay,
         st.wYear
     )
+}
+
+/// Start 9router's tray mode in the background, window-less. Used by the
+/// friendly-failure path and the panel's "start router" button.
+pub fn launch_9router() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "9router", "-t"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
 }
 
 /// Map a config hotkey name (config.toml `[hotkey] ptt`) to a Win32 virtual

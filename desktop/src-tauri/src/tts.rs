@@ -9,7 +9,9 @@
 
 use std::collections::VecDeque;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -175,16 +177,17 @@ pub fn synth_wav(synth: &SpeechSynthesizer, text: &str) -> windows::core::Result
 
 /// Spawn the TTS thread. Sentences stream in from the LLM task; timing
 /// events (`TtsFirstAudio`, `PlaybackFinished`) flow back to the run-loop.
-pub fn spawn(cfg: Tts, loop_tx: Sender<LoopMsg>) -> Sender<TtsCmd> {
+/// `muted` silences the voice without breaking the turn state machine.
+pub fn spawn(cfg: Tts, loop_tx: Sender<LoopMsg>, muted: Arc<AtomicBool>) -> Sender<TtsCmd> {
     let (tx, rx) = std::sync::mpsc::channel::<TtsCmd>();
     std::thread::Builder::new()
         .name("tts".into())
-        .spawn(move || run(cfg, loop_tx, rx))
+        .spawn(move || run(cfg, loop_tx, rx, muted))
         .expect("spawn tts thread");
     tx
 }
 
-fn run(cfg: Tts, loop_tx: Sender<LoopMsg>, rx: Receiver<TtsCmd>) {
+fn run(cfg: Tts, loop_tx: Sender<LoopMsg>, rx: Receiver<TtsCmd>, muted: Arc<AtomicBool>) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
@@ -237,7 +240,7 @@ fn run(cfg: Tts, loop_tx: Sender<LoopMsg>, rx: Receiver<TtsCmd>) {
         match cmd {
             TtsCmd::Sentence(text) => {
                 let text = text.trim().to_string();
-                if text.is_empty() {
+                if text.is_empty() || muted.load(Ordering::Relaxed) {
                     continue;
                 }
                 // Natural chat-audio voice first (if configured): chunks are
@@ -383,6 +386,12 @@ fn run(cfg: Tts, loop_tx: Sender<LoopMsg>, rx: Receiver<TtsCmd>) {
                     }
                 };
                 if finished && first_audio_sent {
+                    let _ = loop_tx
+                        .send(LoopMsg::Input(InputEvent::PlaybackFinished { ms: now_ms() }));
+                } else if finished && muted.load(Ordering::Relaxed) {
+                    // Muted utterance: nothing played, but the orchestrator
+                    // still needs its Speaking→Idle cycle to complete.
+                    let _ = loop_tx.send(LoopMsg::Input(InputEvent::TtsFirstAudio { ms: now_ms() }));
                     let _ = loop_tx
                         .send(LoopMsg::Input(InputEvent::PlaybackFinished { ms: now_ms() }));
                 }

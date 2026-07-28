@@ -48,6 +48,15 @@ pub fn save_secret(name: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// True when a non-empty secret is stored under this name (settings UI shows
+/// key-slot presence without ever reading the secret into the page).
+pub fn secret_exists(name: &str) -> bool {
+    keyring::Entry::new(KEYRING_SERVICE, name)
+        .and_then(|e| e.get_password())
+        .map(|p| !clean_secret(&p).is_empty())
+        .unwrap_or(false)
+}
+
 fn resolve_key(slot: &str, key: &mut String, warnings: &mut Vec<String>) {
     let Some(entry_name) = key.strip_prefix("keyring:") else {
         return; // literal key (or empty) — leave as-is

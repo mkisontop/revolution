@@ -32,6 +32,31 @@ pub struct RetrievedFact {
     pub score: f64,
 }
 
+/// A game row for the memory browser UI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GameRow {
+    pub id: i64,
+    pub name: String,
+    pub fact_count: i64,
+}
+
+/// A stored fact, as listed (not retrieval-ranked) for the memory browser.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactRow {
+    pub id: i64,
+    pub kind: String,
+    pub text: String,
+    pub updated_at: i64,
+}
+
+/// One month's token totals for the cost meter ("2026-07" keys).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MonthUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub turns: u64,
+}
+
 /// Gate thresholds (cosine similarity against the nearest existing fact).
 const NOOP_SIMILARITY: f32 = 0.98;
 const UPDATE_SIMILARITY: f32 = 0.82;
@@ -79,6 +104,12 @@ impl MemoryStore {
                 updated_at INTEGER NOT NULL
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, fact_id UNINDEXED);
+            CREATE TABLE IF NOT EXISTS usage(
+                month TEXT PRIMARY KEY,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                turns INTEGER NOT NULL DEFAULT 0
+            );
             "#,
         )?;
         Ok(Self { conn, embedder })
@@ -225,6 +256,83 @@ impl MemoryStore {
             params![game_id],
             |r| r.get(0),
         )?)
+    }
+
+    /// Every known game with its fact count (memory browser).
+    pub fn list_games(&self) -> Result<Vec<GameRow>, MemoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT g.id, g.name, COUNT(f.id) FROM games g
+             LEFT JOIN facts f ON f.game_id = g.id
+             GROUP BY g.id ORDER BY g.name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(GameRow { id: r.get(0)?, name: r.get(1)?, fact_count: r.get(2)? })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// All facts for one game, newest first (memory browser, not retrieval).
+    pub fn list_facts(&self, game_id: i64) -> Result<Vec<FactRow>, MemoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, text, updated_at FROM facts
+             WHERE game_id = ?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map(params![game_id], |r| {
+            Ok(FactRow {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                text: r.get(2)?,
+                updated_at: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Forget one fact (user-initiated). Returns true when a row existed.
+    pub fn delete_fact(&self, fact_id: i64) -> Result<bool, MemoryError> {
+        self.conn
+            .execute("DELETE FROM facts_fts WHERE fact_id = ?1", params![fact_id])?;
+        let n = self
+            .conn
+            .execute("DELETE FROM facts WHERE id = ?1", params![fact_id])?;
+        Ok(n > 0)
+    }
+
+    /// Accumulate one turn's tokens into the month's row ("YYYY-MM").
+    pub fn add_usage(
+        &self,
+        month: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Result<(), MemoryError> {
+        self.conn.execute(
+            "INSERT INTO usage(month, input_tokens, output_tokens, turns)
+             VALUES(?1, ?2, ?3, 1)
+             ON CONFLICT(month) DO UPDATE SET
+                input_tokens = input_tokens + ?2,
+                output_tokens = output_tokens + ?3,
+                turns = turns + 1",
+            params![month, input_tokens as i64, output_tokens as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn month_usage(&self, month: &str) -> Result<MonthUsage, MemoryError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT input_tokens, output_tokens, turns FROM usage WHERE month = ?1",
+                params![month],
+                |r| {
+                    Ok(MonthUsage {
+                        input_tokens: r.get::<_, i64>(0)? as u64,
+                        output_tokens: r.get::<_, i64>(1)? as u64,
+                        turns: r.get::<_, i64>(2)? as u64,
+                    })
+                },
+            )
+            .optional()?
+            .unwrap_or_default())
     }
 
     /// Hybrid retrieval: FTS5 BM25 ranking ∪ embedding cosine ranking,
@@ -383,6 +491,44 @@ mod tests {
         assert!(hits[0].text.contains("Anubis"), "top hit was {:?}", hits[0]);
         // Elden Ring facts must never leak into Palworld retrieval.
         assert!(hits.iter().all(|h| !h.text.contains("Margit")));
+    }
+
+    #[test]
+    fn list_and_forget_facts() {
+        let mut s = store();
+        let g = s.get_or_create_game("Palworld", None).unwrap();
+        s.remember(g, "base is at the volcano", "note", 1).unwrap();
+        s.remember(g, "prefers no spoilers", "pref", 2).unwrap();
+
+        let games = s.list_games().unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].name, "Palworld");
+        assert_eq!(games[0].fact_count, 2);
+
+        let facts = s.list_facts(g).unwrap();
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0].text, "prefers no spoilers", "newest first");
+
+        assert!(s.delete_fact(facts[0].id).unwrap());
+        assert!(!s.delete_fact(facts[0].id).unwrap(), "second delete is a no-op");
+        assert_eq!(s.fact_count(g).unwrap(), 1);
+        // The FTS leg must not resurrect the deleted fact.
+        let hits = s.retrieve(g, "spoilers", 3).unwrap();
+        assert!(hits.iter().all(|h| !h.text.contains("spoilers")));
+    }
+
+    #[test]
+    fn usage_accumulates_per_month() {
+        let s = store();
+        assert_eq!(s.month_usage("2026-07").unwrap(), MonthUsage::default());
+        s.add_usage("2026-07", 1000, 200).unwrap();
+        s.add_usage("2026-07", 500, 100).unwrap();
+        s.add_usage("2026-08", 10, 1).unwrap();
+        let m = s.month_usage("2026-07").unwrap();
+        assert_eq!(m.input_tokens, 1500);
+        assert_eq!(m.output_tokens, 300);
+        assert_eq!(m.turns, 2);
+        assert_eq!(s.month_usage("2026-08").unwrap().turns, 1);
     }
 
     #[test]

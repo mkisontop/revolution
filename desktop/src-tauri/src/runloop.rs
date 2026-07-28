@@ -1,7 +1,13 @@
 //! The orchestrator run-loop: the single thread that owns the core state
 //! machine, the transcript, and the memory store, executes the `Action`s the
 //! orchestrator returns, and mirrors everything to the UI via Tauri events.
+//!
+//! Beyond the PTT turn cycle it also runs the companion behaviors: session
+//! episode summaries, the brain's remember/update_profile tools, ambient
+//! hype-mode remarks, greet-on-game, sleep/wake, the monthly budget gate,
+//! and graceful shutdown.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,8 +17,10 @@ use revolution_core::config::AppConfig;
 use revolution_core::memory::embed::HashEmbedder;
 use revolution_core::memory::store::{FactGateDecision, MemoryStore};
 use revolution_core::orchestrator::{Action, InputEvent, Orchestrator, PetState};
-use revolution_core::prompt::{default_system_core, PromptBuilder, PromptConfig, Transcript};
-use revolution_core::providers::ImageAttachment;
+use revolution_core::prompt::{
+    ambient_system_core, default_system_core, PromptBuilder, PromptConfig, Transcript,
+};
+use revolution_core::providers::{ChatRequest, ImageAttachment, Turn};
 use serde::Serialize;
 use tauri::Emitter;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
@@ -20,16 +28,17 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use crate::capture::CaptureShared;
 use crate::config_io::{self, LoadedConfig};
 use crate::duck::Ducker;
-use crate::llm;
+use crate::llm::{self, SummarizeTarget};
 use crate::mic::MicHandle;
-use crate::msg::{LoopMsg, TtsCmd};
+use crate::msg::{LoopMsg, TtsCmd, UiQuery, Usage, UsageSnapshot};
 use crate::stt;
-use crate::util::now_ms;
+use crate::util::{epoch_ms, month_string, now_ms};
 
 /// Panel-facing status snapshot (also emitted as `rev:status`).
 #[derive(Clone, Default, Serialize)]
 pub struct Status {
     pub game: Option<String>,
+    pub game_id: Option<i64>,
     /// Basename of the current foreground exe (helps debug game detection).
     pub foreground_exe: String,
     pub capture_enabled: bool,
@@ -47,6 +56,9 @@ pub struct Status {
     pub config_path: String,
     pub warnings: Vec<String>,
     pub last_usage: Option<UsageJson>,
+    pub muted: bool,
+    pub hype_mode: bool,
+    pub first_run: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -65,6 +77,7 @@ pub struct RunDeps {
     pub loop_tx: Sender<LoopMsg>,
     pub rx: Receiver<LoopMsg>,
     pub status: Arc<Mutex<Status>>,
+    pub muted: Arc<AtomicBool>,
 }
 
 struct GameCtx {
@@ -72,16 +85,32 @@ struct GameCtx {
     name: String,
     profile: String,
     episode: Option<String>,
+    /// Wall-clock session start, for the episode row.
+    session_start_epoch_ms: u64,
+    /// Transcript index where this game's session began.
+    start_turn_idx: usize,
+    /// Questions asked this session — sessions with none aren't summarized.
+    asks: u32,
 }
+
+/// Rotating short hellos for greet-on-game (canned: instant + free).
+const GREETS: [&str; 4] = [
+    "{} — let's go!",
+    "Back to {}. I'm in.",
+    "Ooh, {} time. I'm watching.",
+    "{}? Great choice. Let's cook.",
+];
 
 struct Loop {
     app: tauri::AppHandle,
     cfg: AppConfig,
+    first_run: bool,
     capture: Arc<CaptureShared>,
     mic: MicHandle,
     tts_tx: Sender<TtsCmd>,
     loop_tx: Sender<LoopMsg>,
     status: Arc<Mutex<Status>>,
+    muted: Arc<AtomicBool>,
     client: reqwest::Client,
 
     orch: Orchestrator,
@@ -95,13 +124,25 @@ struct Loop {
     pending_question: Option<String>,
     toggle_held: bool,
     stt_warned: bool,
+
+    pet_state: PetState,
+    /// The pet is voicing a greeting or ambient remark (not a PTT answer).
+    ambient_speaking: bool,
+    last_ambient_ms: u64,
+    last_ambient_hash: u64,
+    last_interaction_ms: u64,
+    sleeping: bool,
+    compaction_inflight: bool,
+    /// We auto-start 9router at most once per session.
+    ninerouter_kicked: bool,
+    greet_idx: usize,
 }
 
 pub fn run(deps: RunDeps) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
-    let RunDeps { app, loaded, capture, mic, tts_tx, loop_tx, rx, status } = deps;
+    let RunDeps { app, loaded, capture, mic, tts_tx, loop_tx, rx, status, muted } = deps;
 
     let store = match MemoryStore::open(
         &config_io::memory_db_path().to_string_lossy(),
@@ -117,11 +158,13 @@ pub fn run(deps: RunDeps) {
     let mut l = Loop {
         app,
         cfg: loaded.cfg,
+        first_run: loaded.first_run,
         capture,
         mic,
         tts_tx,
         loop_tx,
         status,
+        muted,
         client: reqwest::Client::new(),
         orch: Orchestrator::new(),
         transcript: Transcript::new(),
@@ -134,6 +177,15 @@ pub fn run(deps: RunDeps) {
         pending_question: None,
         toggle_held: false,
         stt_warned: false,
+        pet_state: PetState::Watching,
+        ambient_speaking: false,
+        last_ambient_ms: 0,
+        last_ambient_hash: 0,
+        last_interaction_ms: now_ms(),
+        sleeping: false,
+        compaction_inflight: false,
+        ninerouter_kicked: false,
+        greet_idx: 0,
     };
 
     // Until a game is known, capture obeys the privacy default.
@@ -144,7 +196,11 @@ pub fn run(deps: RunDeps) {
     loop {
         match rx.recv_timeout(Duration::from_millis(1000)) {
             Ok(msg) => l.handle(msg),
-            Err(RecvTimeoutError::Timeout) => l.refresh_status(),
+            Err(RecvTimeoutError::Timeout) => {
+                l.refresh_status();
+                l.maybe_sleep();
+                l.maybe_ambient();
+            }
             Err(RecvTimeoutError::Disconnected) => return,
         }
     }
@@ -157,7 +213,8 @@ impl Loop {
         let _ = self.app.emit(event, payload);
     }
 
-    fn emit_pet(&self, s: PetState) {
+    fn emit_pet(&mut self, s: PetState) {
+        self.pet_state = s;
         let name = match s {
             PetState::Sleeping => "sleeping",
             PetState::Watching => "watching",
@@ -179,10 +236,11 @@ impl Loop {
     fn refresh_status(&self) {
         let mut st = self.status.lock().unwrap();
         st.game = self.game.as_ref().map(|g| g.name.clone());
-        st.capture_enabled = self.capture.enabled.load(std::sync::atomic::Ordering::Relaxed);
+        st.game_id = self.game.as_ref().map(|g| g.id);
+        st.capture_enabled = self.capture.enabled.load(Ordering::Relaxed);
         st.capture_error = self.capture.error.lock().unwrap().clone();
-        st.frames_seen = self.capture.frames_seen.load(std::sync::atomic::Ordering::Relaxed);
-        st.keyframes = self.capture.keyframes.load(std::sync::atomic::Ordering::Relaxed);
+        st.frames_seen = self.capture.frames_seen.load(Ordering::Relaxed);
+        st.keyframes = self.capture.keyframes.load(Ordering::Relaxed);
         {
             let ring = self.capture.ring.lock().unwrap();
             st.ring_frames = ring.len();
@@ -195,6 +253,9 @@ impl Loop {
         st.stt_ready = config_io::stt_ready(&self.cfg);
         st.hotkey = self.cfg.hotkey.ptt.clone();
         st.config_path = config_io::config_path().to_string_lossy().to_string();
+        st.muted = self.muted.load(Ordering::Relaxed);
+        st.hype_mode = self.cfg.privacy.hype_mode;
+        st.first_run = self.first_run;
         let snapshot = st.clone();
         drop(st);
         self.emit("rev:status", snapshot);
@@ -204,8 +265,28 @@ impl Loop {
 
     fn handle(&mut self, msg: LoopMsg) {
         match msg {
-            LoopMsg::Input(ev) => self.handle_input(ev, true),
+            LoopMsg::Input(ev) => {
+                self.wake();
+                // A PTT press while the pet is voicing a greeting/ambient
+                // remark is a barge-in the orchestrator can't see (it's Idle).
+                if matches!(ev, InputEvent::PttDown { .. }) && self.ambient_speaking {
+                    let _ = self.tts_tx.send(TtsCmd::Stop);
+                    self.ambient_speaking = false;
+                }
+                if matches!(ev, InputEvent::PlaybackFinished { .. }) && self.ambient_speaking {
+                    self.ambient_speaking = false;
+                    self.emit("rev:speech-done", ());
+                    self.emit_pet(PetState::Watching);
+                }
+                if matches!(ev, InputEvent::Error { .. }) {
+                    // A TTS failure during a greeting/remark must not wedge
+                    // the ambient lane shut.
+                    self.ambient_speaking = false;
+                }
+                self.handle_input(ev, true);
+            }
             LoopMsg::Typed(q) => {
+                self.wake();
                 let q = q.trim().to_string();
                 if q.is_empty() {
                     return;
@@ -235,11 +316,7 @@ impl Loop {
                 self.transcript_line("assistant", &full_text);
                 self.emit("rev:speech-done", ());
                 if let Some(u) = usage {
-                    self.status.lock().unwrap().last_usage = Some(UsageJson {
-                        input_tokens: u.input_tokens,
-                        output_tokens: u.output_tokens,
-                        cache_read_tokens: u.cache_read_tokens,
-                    });
+                    self.record_usage(u);
                 }
                 self.maybe_compact();
             }
@@ -248,7 +325,8 @@ impl Loop {
                 if self.pending_question.take().is_some() {
                     self.transcript.push_assistant("[no answer — request failed]");
                 }
-                self.toast(format!("Model request failed: {what}"));
+                let friendly = self.map_llm_failure(&what);
+                self.toast(friendly);
                 self.handle_input(InputEvent::Error { ms: now_ms(), what }, false);
             }
             LoopMsg::SttFailed(what) => {
@@ -256,8 +334,44 @@ impl Loop {
                 self.handle_input(InputEvent::Error { ms: now_ms(), what }, false);
             }
             LoopMsg::GameChanged { exe_path, game } => self.on_game_changed(exe_path, game),
-            LoopMsg::RememberNote(text) => self.on_remember(text),
+            LoopMsg::RememberNote(text) => self.on_remember(text, false),
+            LoopMsg::ToolRemember(text) => self.on_remember(text, true),
+            LoopMsg::ToolUpdateProfile(md) => self.on_update_profile(md),
+            LoopMsg::EpisodeReady { game_id, started_epoch_ms, summary } => {
+                if let Some(store) = &self.store {
+                    let _ = store.add_episode(game_id, started_epoch_ms, epoch_ms(), &summary);
+                }
+            }
+            LoopMsg::CompactionReady(summary) => {
+                self.compaction_inflight = false;
+                if self.transcript.needs_compaction(&self.pcfg) {
+                    let folded = self.transcript.compact(&self.pcfg, &summary);
+                    self.transcript_line("note", &format!("(compacted {folded} old turns)"));
+                    // Splice indices shifted under the session slice.
+                    if let Some(g) = self.game.as_mut() {
+                        g.start_turn_idx = 0;
+                    }
+                }
+            }
+            LoopMsg::AmbientRemark(text) => self.deliver_ambient(text),
+            LoopMsg::SetMuted(m) => {
+                self.muted.store(m, Ordering::Relaxed);
+                if m {
+                    let _ = self.tts_tx.send(TtsCmd::Stop);
+                    if self.ambient_speaking {
+                        self.ambient_speaking = false;
+                        self.emit_pet(PetState::Watching);
+                    }
+                }
+                self.toast(if m { "Rev is muted." } else { "Rev can speak again." });
+                self.refresh_status();
+            }
+            LoopMsg::Query(q) => self.answer_query(q),
             LoopMsg::Toast(text) => self.toast(text),
+            LoopMsg::Shutdown => {
+                self.flush_episode_blocking();
+                self.app.exit(0);
+            }
         }
     }
 
@@ -286,7 +400,7 @@ impl Loop {
         for a in actions {
             self.exec(a);
         }
-        if is_first_audio {
+        if is_first_audio && !self.ambient_speaking {
             if let Some(r) = self.orch.marks.report() {
                 self.emit(
                     "rev:latency",
@@ -311,7 +425,7 @@ impl Loop {
             Action::CaptureFreshFrame => {
                 self.capture
                     .fresh_request
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                    .store(true, Ordering::Relaxed);
             }
             Action::StartSttStream => self.mic.start(),
             Action::FinalizeStt => self.finalize_stt(),
@@ -386,7 +500,6 @@ impl Loop {
     /// ask runs a one-shot grab — asking IS the consent `upload_on_ask_only`
     /// is about — and the privacy pause is restored right after.
     fn collect_frames(&mut self) -> Vec<ImageAttachment> {
-        use std::sync::atomic::Ordering;
         let capture_dead = self.capture.error.lock().unwrap().is_some();
         let was_enabled = self.capture.enabled.load(Ordering::Relaxed);
         if !was_enabled && !capture_dead {
@@ -419,12 +532,28 @@ impl Loop {
 
     fn send_chat(&mut self, question: String) {
         if !config_io::qa_ready(&self.cfg) {
-            self.toast("No API key yet — open the panel and add your roles.qa key");
+            self.toast("No API key yet — click the pet and finish setup");
             self.handle_input(
                 InputEvent::Error { ms: now_ms(), what: "qa key missing".into() },
                 false,
             );
             return;
+        }
+        // Monthly budget gate — only enforceable when prices are configured.
+        if let Some(store) = &self.store {
+            if let Ok(m) = store.month_usage(&month_string()) {
+                if self.cfg.budget.over_cap(m.input_tokens, m.output_tokens) {
+                    self.toast(format!(
+                        "Monthly budget cap (${:.2}) reached — raise it in Settings to keep asking.",
+                        self.cfg.budget.monthly_usd_cap
+                    ));
+                    self.handle_input(
+                        InputEvent::Error { ms: now_ms(), what: "budget cap reached".into() },
+                        false,
+                    );
+                    return;
+                }
+            }
         }
 
         // Frames: freshest + highest-change, capped by the prompt config.
@@ -460,6 +589,9 @@ impl Loop {
         self.transcript.push_user(question.clone(), Vec::new());
         self.transcript_line("user", &question);
         self.pending_question = Some(question);
+        if let Some(g) = self.game.as_mut() {
+            g.asks += 1;
+        }
 
         self.llm_handle = Some(llm::spawn_stream(
             self.client.clone(),
@@ -469,6 +601,49 @@ impl Loop {
             self.loop_tx.clone(),
             self.tts_tx.clone(),
         ));
+    }
+
+    fn record_usage(&mut self, u: Usage) {
+        self.status.lock().unwrap().last_usage = Some(UsageJson {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            cache_read_tokens: u.cache_read_tokens,
+        });
+        if let Some(store) = &self.store {
+            let _ = store.add_usage(&month_string(), u.input_tokens, u.output_tokens);
+        }
+    }
+
+    /// Translate raw transport errors into something a player can act on,
+    /// and auto-start 9router once when the local brain endpoint is down.
+    fn map_llm_failure(&mut self, what: &str) -> String {
+        let base = self.cfg.roles.qa.base_url.clone().unwrap_or_default();
+        let local = base.contains("localhost") || base.contains("127.0.0.1");
+        let lower = what.to_lowercase();
+        let conn_down = lower.contains("error sending request")
+            || lower.contains("connection refused")
+            || lower.contains("10061")
+            || lower.contains("connect");
+        if local && conn_down {
+            if !self.ninerouter_kicked && base.contains(":20128") {
+                self.ninerouter_kicked = true;
+                crate::util::launch_9router();
+                return "Your local brain router wasn't running — I just started it. \
+                        Ask me again in about five seconds."
+                    .into();
+            }
+            return "The local brain router isn't reachable yet — give it a few seconds \
+                    and ask again."
+                .into();
+        }
+        if lower.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key") {
+            return "The model rejected your API key — check it in the panel's Settings tab.".into();
+        }
+        if lower.contains("429") || lower.contains("rate limit") {
+            return "The provider is rate-limiting — give it a moment and try again.".into();
+        }
+        let short: String = what.chars().take(160).collect();
+        format!("Model request failed: {short}")
     }
 
     // ---- game + memory -----------------------------------------------------
@@ -483,12 +658,15 @@ impl Loop {
                     // paused capture on the way out, so re-arm it here —
                     // early-returning without this left the pet permanently
                     // blind for the rest of the session.
-                    if !self.capture.enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                    if !self.capture.enabled.load(Ordering::Relaxed) {
                         self.capture.set_enabled(true);
                         self.refresh_status();
                     }
                     return;
                 }
+                self.wake();
+                // Different game: summarize the outgoing session first.
+                self.flush_episode_async();
                 let ctx = self.store.as_ref().and_then(|store| {
                     let id = store.get_or_create_game(&name, Some(&exe)).ok()?;
                     let profile = store
@@ -497,12 +675,21 @@ impl Loop {
                         .flatten()
                         .unwrap_or_else(|| "New player — no profile yet.".to_string());
                     let episode = store.latest_episode(id).ok().flatten();
-                    Some(GameCtx { id, name: name.clone(), profile, episode })
+                    Some(GameCtx {
+                        id,
+                        name: name.clone(),
+                        profile,
+                        episode,
+                        session_start_epoch_ms: epoch_ms(),
+                        start_turn_idx: self.transcript.turns().len(),
+                        asks: 0,
+                    })
                 });
                 self.game = ctx;
                 self.capture.set_enabled(true);
                 self.transcript.push_note(format!("Game switched to {name}."));
                 self.toast(format!("Watching {name}"));
+                self.greet(&name);
                 self.refresh_status();
             }
             None => {
@@ -515,7 +702,7 @@ impl Loop {
         }
     }
 
-    fn on_remember(&mut self, text: String) {
+    fn on_remember(&mut self, text: String, from_tool: bool) {
         let text = text.trim().to_string();
         if text.is_empty() {
             return;
@@ -534,37 +721,345 @@ impl Loop {
                 };
                 game_id.and_then(|id| {
                     store
-                        .remember(id, &text, "note", now_ms())
+                        .remember(id, &text, "note", epoch_ms())
                         .map_err(|e| e.to_string())
                 })
             }
         };
         match outcome {
-            Ok(FactGateDecision::Add) => self.toast("Remembered."),
+            Ok(FactGateDecision::Add) => {
+                self.toast(if from_tool { "Rev saved a memory." } else { "Remembered." })
+            }
             Ok(FactGateDecision::Update(_)) => self.toast("Updated an existing memory."),
-            Ok(FactGateDecision::Noop) => self.toast("Already knew that."),
+            Ok(FactGateDecision::Noop) => {
+                if !from_tool {
+                    self.toast("Already knew that.")
+                }
+            }
             Err(e) => self.toast(format!("Could not save: {e}")),
         }
     }
 
-    fn maybe_compact(&mut self) {
-        if !self.transcript.needs_compaction(&self.pcfg) {
+    fn on_update_profile(&mut self, markdown: String) {
+        let markdown = markdown.trim().to_string();
+        if markdown.is_empty() {
             return;
         }
-        // v0 heuristic summary: the model-written summarizer is Phase 2.
-        let summary: String = self
+        let Some(g) = self.game.as_ref() else {
+            return;
+        };
+        let (id, ok) = match &self.store {
+            Some(store) => (g.id, store.set_profile(g.id, &markdown, epoch_ms()).is_ok()),
+            None => (g.id, false),
+        };
+        if ok {
+            if let Some(g) = self.game.as_mut() {
+                if g.id == id {
+                    g.profile = markdown;
+                }
+            }
+            self.toast("Rev updated your player profile.");
+        }
+    }
+
+    fn answer_query(&mut self, q: UiQuery) {
+        match q {
+            UiQuery::Games(reply) => {
+                let rows = self
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.list_games().ok())
+                    .unwrap_or_default();
+                let _ = reply.send(rows);
+            }
+            UiQuery::Facts { game_id, reply } => {
+                let rows = self
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.list_facts(game_id).ok())
+                    .unwrap_or_default();
+                let _ = reply.send(rows);
+            }
+            UiQuery::Forget { fact_id, reply } => {
+                let ok = self
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.delete_fact(fact_id).ok())
+                    .unwrap_or(false);
+                let _ = reply.send(ok);
+            }
+            UiQuery::Profile { game_id, reply } => {
+                let md = self
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.get_profile(game_id).ok())
+                    .flatten()
+                    .unwrap_or_default();
+                let _ = reply.send(md);
+            }
+            UiQuery::SetProfile { game_id, markdown, reply } => {
+                let ok = self
+                    .store
+                    .as_ref()
+                    .map(|s| s.set_profile(game_id, &markdown, epoch_ms()).is_ok())
+                    .unwrap_or(false);
+                if ok {
+                    if let Some(g) = self.game.as_mut() {
+                        if g.id == game_id {
+                            g.profile = markdown;
+                        }
+                    }
+                }
+                let _ = reply.send(ok);
+            }
+            UiQuery::Usage(reply) => {
+                let month = month_string();
+                let m = self
+                    .store
+                    .as_ref()
+                    .and_then(|s| s.month_usage(&month).ok())
+                    .unwrap_or_default();
+                let _ = reply.send(UsageSnapshot::from_store(month, m, &self.cfg.budget));
+            }
+        }
+    }
+
+    // ---- session episodes --------------------------------------------------
+
+    /// The current game session's dialogue as plain text (empty if trivial).
+    fn session_text(&self) -> Option<(i64, u64, String)> {
+        let g = self.game.as_ref()?;
+        if g.asks == 0 {
+            return None;
+        }
+        let turns = self.transcript.turns();
+        let slice = &turns[g.start_turn_idx.min(turns.len())..];
+        let mut text = String::new();
+        for t in slice {
+            match t {
+                Turn::User { text: q, .. } => text.push_str(&format!("Player: {q}\n")),
+                Turn::Assistant { text: a } => text.push_str(&format!("Rev: {a}\n")),
+                Turn::SystemNote { .. } => {}
+            }
+        }
+        (!text.trim().is_empty()).then(|| (g.id, g.session_start_epoch_ms, text))
+    }
+
+    /// Summarize the outgoing session in the background (game switch).
+    fn flush_episode_async(&mut self) {
+        if !config_io::qa_ready(&self.cfg) {
+            return;
+        }
+        if let Some((game_id, started_epoch_ms, text)) = self.session_text() {
+            llm::spawn_summarize(
+                self.client.clone(),
+                self.cfg.roles.qa.clone(),
+                text,
+                SummarizeTarget::Episode { game_id, started_epoch_ms },
+                self.loop_tx.clone(),
+            );
+        }
+    }
+
+    /// Summarize synchronously with a hard deadline (quit path).
+    fn flush_episode_blocking(&mut self) {
+        if !config_io::qa_ready(&self.cfg) {
+            return;
+        }
+        if let Some((game_id, started_epoch_ms, text)) = self.session_text() {
+            if let Some(summary) = llm::summarize_blocking(
+                &self.client,
+                &self.cfg.roles.qa,
+                &text,
+                Duration::from_secs(6),
+            ) {
+                if let Some(store) = &self.store {
+                    let _ = store.add_episode(game_id, started_epoch_ms, epoch_ms(), &summary);
+                }
+            }
+        }
+    }
+
+    fn maybe_compact(&mut self) {
+        if self.compaction_inflight || !self.transcript.needs_compaction(&self.pcfg) {
+            return;
+        }
+        // Heuristic fallback: the model-written summary is preferred, but
+        // compaction must complete even offline.
+        let fallback: String = self
             .transcript
             .turns()
             .iter()
             .filter_map(|t| match t {
-                revolution_core::providers::Turn::User { text, .. } => {
-                    Some(text.chars().take(60).collect::<String>())
-                }
+                Turn::User { text, .. } => Some(text.chars().take(60).collect::<String>()),
                 _ => None,
             })
             .collect::<Vec<_>>()
             .join("; ");
-        let folded = self.transcript.compact(&self.pcfg, &summary);
-        self.transcript_line("note", &format!("(compacted {folded} old turns)"));
+        if !config_io::qa_ready(&self.cfg) {
+            let folded = self.transcript.compact(&self.pcfg, &fallback);
+            self.transcript_line("note", &format!("(compacted {folded} old turns)"));
+            if let Some(g) = self.game.as_mut() {
+                g.start_turn_idx = 0;
+            }
+            return;
+        }
+        let mut text = String::new();
+        for t in self.transcript.turns() {
+            match t {
+                Turn::User { text: q, .. } => text.push_str(&format!("Player: {q}\n")),
+                Turn::Assistant { text: a } => text.push_str(&format!("Rev: {a}\n")),
+                Turn::SystemNote { .. } => {}
+            }
+        }
+        self.compaction_inflight = true;
+        llm::spawn_summarize(
+            self.client.clone(),
+            self.cfg.roles.qa.clone(),
+            text,
+            SummarizeTarget::Compaction { fallback },
+            self.loop_tx.clone(),
+        );
+    }
+
+    // ---- companion behaviors ----------------------------------------------
+
+    fn wake(&mut self) {
+        self.last_interaction_ms = now_ms();
+        if self.sleeping {
+            self.sleeping = false;
+            self.emit_pet(PetState::Watching);
+        }
+    }
+
+    /// With no game and no interaction for a while, the pet dozes off —
+    /// purely cosmetic, and any event wakes it.
+    fn maybe_sleep(&mut self) {
+        let after = self.cfg.companion.sleep_after_secs;
+        if after == 0 || self.sleeping || self.game.is_some() {
+            return;
+        }
+        if self.pet_state == PetState::Watching
+            && now_ms().saturating_sub(self.last_interaction_ms) > after * 1000
+        {
+            self.sleeping = true;
+            self.emit_pet(PetState::Sleeping);
+        }
+    }
+
+    /// Short spoken hello when a game comes into focus.
+    fn greet(&mut self, game_name: &str) {
+        if !self.cfg.companion.greet_on_game || self.muted.load(Ordering::Relaxed) {
+            return;
+        }
+        let line = GREETS[self.greet_idx % GREETS.len()].replace("{}", game_name);
+        self.greet_idx += 1;
+        self.emit("rev:pet", "celebrate");
+        self.emit("rev:delta", line.clone());
+        self.ambient_speaking = true;
+        let _ = self.tts_tx.send(TtsCmd::Sentence(line));
+        let _ = self.tts_tx.send(TtsCmd::EndOfUtterance);
+    }
+
+    /// The opt-in hype lane: an occasional one-liner in natural pauses.
+    /// Hard conditions keep it from ever talking over a fight or an answer.
+    fn maybe_ambient(&mut self) {
+        if !self.cfg.privacy.hype_mode
+            || self.muted.load(Ordering::Relaxed)
+            || self.ambient_speaking
+            || self.llm_handle.is_some()
+            || self.pet_state != PetState::Watching
+            || !config_io::qa_ready(&self.cfg)
+        {
+            return;
+        }
+        let Some(game_name) = self.game.as_ref().map(|g| g.name.clone()) else {
+            return;
+        };
+        let gap_ms = self.cfg.companion.ambient_min_gap_secs.max(30) * 1000;
+        let now = now_ms();
+        if now.saturating_sub(self.last_ambient_ms) < gap_ms {
+            return;
+        }
+        // Budget gate applies to ambient too.
+        if let Some(store) = &self.store {
+            if let Ok(m) = store.month_usage(&month_string()) {
+                if self.cfg.budget.over_cap(m.input_tokens, m.output_tokens) {
+                    return;
+                }
+            }
+        }
+        // Only remark on a frame we haven't remarked on (something happened),
+        // and only when it's fresh.
+        let frame = {
+            let ring = self.capture.ring.lock().unwrap();
+            ring.latest().map(|kf| {
+                (
+                    kf.hash,
+                    kf.ts_ms,
+                    ImageAttachment {
+                        media_type: "image/jpeg".into(),
+                        base64_data: base64::engine::general_purpose::STANDARD.encode(&kf.jpeg),
+                    },
+                )
+            })
+        };
+        let Some((hash, ts, frame)) = frame else { return };
+        if hash == self.last_ambient_hash || now.saturating_sub(ts) > 30_000 {
+            return;
+        }
+        self.last_ambient_ms = now;
+        self.last_ambient_hash = hash;
+
+        let mut cfg = self
+            .cfg
+            .roles
+            .ambient
+            .clone()
+            .unwrap_or_else(|| self.cfg.roles.qa.clone());
+        cfg.max_output_tokens = 80;
+        cfg.enable_web_search = false;
+        let req = ChatRequest {
+            system: ambient_system_core(),
+            context_block: format!("## Game\n{game_name}\n"),
+            turns: vec![Turn::User {
+                text: "Latest frame attached. One remark if the moment deserves it, \
+                       or reply with exactly PASS."
+                    .into(),
+                images: vec![frame],
+            }],
+        };
+        let client = self.client.clone();
+        let tx = self.loop_tx.clone();
+        llm::rt().spawn(async move {
+            if let Ok(text) = llm::collect_stream(&client, &cfg, &req).await {
+                let t = text.trim();
+                if !t.is_empty() && !t.eq_ignore_ascii_case("pass") && t.len() < 300 {
+                    let _ = tx.send(LoopMsg::AmbientRemark(t.to_string()));
+                }
+            }
+        });
+    }
+
+    /// An ambient remark arrived — say it only if the moment is still quiet.
+    fn deliver_ambient(&mut self, text: String) {
+        if self.muted.load(Ordering::Relaxed)
+            || self.ambient_speaking
+            || self.llm_handle.is_some()
+            || self.pet_state != PetState::Watching
+        {
+            return;
+        }
+        let spoken = llm::speakable(&text);
+        if spoken.trim().is_empty() {
+            return;
+        }
+        self.transcript.push_assistant(text.clone());
+        self.transcript_line("assistant", &text);
+        self.emit("rev:delta", text);
+        self.emit_pet(PetState::Speaking);
+        self.ambient_speaking = true;
+        let _ = self.tts_tx.send(TtsCmd::Sentence(spoken));
+        let _ = self.tts_tx.send(TtsCmd::EndOfUtterance);
     }
 }

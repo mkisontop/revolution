@@ -205,6 +205,20 @@ preferences, running jokes) — not for trivia.
     .to_string()
 }
 
+/// Instruction for the background summarizer (session episodes + transcript
+/// compaction). Third-person past tense so the summary reads correctly when
+/// injected into a later session's context block.
+pub fn summarizer_instruction() -> String {
+    "\
+Summarize this gaming session transcript in 3-5 plain sentences. Capture what \
+actually matters for picking the session back up later: the player's build or \
+loadout, stated goals, key events (bosses, deaths, catches, unlocks), decisions \
+made, and any running jokes. Past tense, third person ('the player'). No \
+markdown, no preamble — output only the summary sentences.\
+"
+    .to_string()
+}
+
 /// System core for the opt-in ambient (hype-mode) lane. The cadence contract
 /// is the load-bearing part: unprompted remarks land only in natural pauses.
 pub fn ambient_system_core() -> String {

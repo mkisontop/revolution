@@ -185,6 +185,142 @@ impl ToolCallAccum {
     }
 }
 
+/// Pull one string field out of a tool call's (possibly malformed) JSON args.
+fn arg_str(arguments: &str, key: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()?
+        .get(key)?
+        .as_str()
+        .map(String::from)
+}
+
+/// Execute a request through the provider adapter and collect the streamed
+/// text into one string (no TTS, no tools). The workhorse behind the
+/// summarizer, the ambient lane, and the panel's "test brain" button.
+pub async fn collect_stream(
+    client: &reqwest::Client,
+    cfg: &ProviderConfig,
+    req: &ChatRequest,
+) -> anyhow::Result<String> {
+    let spec = provider_for(cfg.kind).build_request(cfg, req);
+    let mut provider = provider_for(cfg.kind);
+    let mut rb = match spec.method {
+        "GET" => client.get(&spec.url),
+        _ => client.post(&spec.url),
+    };
+    for (k, v) in &spec.headers {
+        rb = rb.header(k, v);
+    }
+    let resp = rb
+        .json(&spec.body)
+        .timeout(std::time::Duration::from_secs(45))
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "{} returned {status}: {}",
+            spec.url,
+            body.chars().take(400).collect::<String>()
+        );
+    }
+    let mut sse = SseAssembler::new();
+    let mut stream = resp.bytes_stream();
+    let mut full = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        for msg in sse.push(&String::from_utf8_lossy(&chunk)) {
+            for ev in provider.parse_sse(&msg) {
+                if let StreamEvent::TextDelta(t) = ev {
+                    full.push_str(&t);
+                }
+            }
+        }
+    }
+    Ok(full.trim().to_string())
+}
+
+/// What a background summary is for — decides the completion message.
+pub enum SummarizeTarget {
+    Episode { game_id: i64, started_epoch_ms: u64 },
+    /// Carries the heuristic fallback used if the model call fails, so
+    /// compaction always completes.
+    Compaction { fallback: String },
+}
+
+fn summarize_request(transcript_text: &str) -> ChatRequest {
+    ChatRequest {
+        system: revolution_core::prompt::summarizer_instruction(),
+        context_block: String::new(),
+        turns: vec![revolution_core::providers::Turn::User {
+            text: transcript_text.to_string(),
+            images: Vec::new(),
+        }],
+    }
+}
+
+/// Model config tuned for summaries: short output, never the slow dial.
+fn summarizer_cfg(mut cfg: ProviderConfig) -> ProviderConfig {
+    cfg.max_output_tokens = 300;
+    cfg.enable_web_search = false;
+    cfg
+}
+
+/// Fire-and-forget background summary (session episode or compaction).
+pub fn spawn_summarize(
+    client: reqwest::Client,
+    cfg: ProviderConfig,
+    transcript_text: String,
+    target: SummarizeTarget,
+    loop_tx: Sender<LoopMsg>,
+) {
+    rt().spawn(async move {
+        let cfg = summarizer_cfg(cfg);
+        let req = summarize_request(&transcript_text);
+        let result = collect_stream(&client, &cfg, &req).await;
+        match (result, target) {
+            (Ok(s), SummarizeTarget::Episode { game_id, started_epoch_ms }) if !s.is_empty() => {
+                let _ = loop_tx.send(LoopMsg::EpisodeReady {
+                    game_id,
+                    started_epoch_ms,
+                    summary: s,
+                });
+            }
+            (Err(e), SummarizeTarget::Episode { .. }) => {
+                eprintln!("episode summary failed: {e:#}");
+            }
+            (_, SummarizeTarget::Episode { .. }) => {}
+            (Ok(s), SummarizeTarget::Compaction { fallback }) => {
+                let summary = if s.is_empty() { fallback } else { s };
+                let _ = loop_tx.send(LoopMsg::CompactionReady(summary));
+            }
+            (Err(e), SummarizeTarget::Compaction { fallback }) => {
+                eprintln!("compaction summary failed ({e:#}) — using heuristic");
+                let _ = loop_tx.send(LoopMsg::CompactionReady(fallback));
+            }
+        }
+    });
+}
+
+/// Synchronous summary with a hard deadline — the quit path only.
+pub fn summarize_blocking(
+    client: &reqwest::Client,
+    cfg: &ProviderConfig,
+    transcript_text: &str,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let cfg = summarizer_cfg(cfg.clone());
+    let req = summarize_request(transcript_text);
+    rt().block_on(async {
+        tokio::time::timeout(timeout, collect_stream(client, &cfg, &req))
+            .await
+            .ok()?
+            .ok()
+            .filter(|s| !s.is_empty())
+    })
+}
+
 /// The searching side of tool-search: one non-streaming request to a
 /// web-capable model. OpenRouter models get the `:online` suffix (their web
 /// plugin); anything else is called as-is, so a natively-searching endpoint
@@ -235,7 +371,7 @@ async fn online_lookup(
         .to_string())
 }
 
-const WEB_SEARCH_TOOL_JSON: &str = r#"[{
+const WEB_SEARCH_TOOL_JSON: &str = r#"{
     "type": "function",
     "function": {
         "name": "web_search",
@@ -244,6 +380,32 @@ const WEB_SEARCH_TOOL_JSON: &str = r#"[{
             "type": "object",
             "properties": {"query": {"type": "string", "description": "The search query"}},
             "required": ["query"]
+        }
+    }
+}"#;
+
+/// The memory tools the system core promises the brain (durable facts about
+/// the player, not trivia). Executed locally by the run-loop.
+const MEMORY_TOOLS_JSON: &str = r#"[{
+    "type": "function",
+    "function": {
+        "name": "remember",
+        "description": "Save one durable fact about the player for future sessions: their build, goals, preferences, running jokes. One short sentence per call. Never for game trivia or things visible on screen.",
+        "parameters": {
+            "type": "object",
+            "properties": {"fact": {"type": "string", "description": "The fact, one sentence"}},
+            "required": ["fact"]
+        }
+    }
+}, {
+    "type": "function",
+    "function": {
+        "name": "update_profile",
+        "description": "Rewrite the player profile card for this game (the '## Player profile' block you receive). Use when the build/goals changed substantially; send the complete new markdown.",
+        "parameters": {
+            "type": "object",
+            "properties": {"markdown": {"type": "string", "description": "The full replacement profile markdown"}},
+            "required": ["markdown"]
         }
     }
 }]"#;
@@ -269,11 +431,19 @@ async fn stream_once(
     let tool_search = cfg.enable_web_search
         && searcher.is_some()
         && matches!(cfg.kind, revolution_core::providers::ProviderKind::OpenaiCompat);
-    if tool_search {
+    // remember/update_profile ride the same OpenAI tool wire; they need no
+    // searcher — the run-loop executes them locally.
+    let tools_declared = matches!(cfg.kind, revolution_core::providers::ProviderKind::OpenaiCompat);
+    if tools_declared {
         if let Some(obj) = spec.body.as_object_mut() {
             obj.remove("web_search_options"); // adapter's non-OpenRouter shape
         }
-        spec.body["tools"] = serde_json::from_str(WEB_SEARCH_TOOL_JSON).expect("static tool json");
+        let mut tools: Vec<serde_json::Value> =
+            serde_json::from_str(MEMORY_TOOLS_JSON).expect("static tool json");
+        if tool_search {
+            tools.push(serde_json::from_str(WEB_SEARCH_TOOL_JSON).expect("static tool json"));
+        }
+        spec.body["tools"] = serde_json::json!(tools);
         spec.body["tool_choice"] = serde_json::json!("auto");
     }
 
@@ -355,41 +525,72 @@ async fn stream_once(
         }
 
         let calls = accum.finish();
-        let Some(call) = calls.first().filter(|_| round == 0 && tool_search) else {
+        if round != 0 || !tools_declared || calls.is_empty() {
             break;
-        };
-        // The brain wants to look something up.
-        let query = serde_json::from_str::<serde_json::Value>(&call.arguments)
-            .ok()
-            .and_then(|a| a.get("query").and_then(|q| q.as_str().map(String::from)))
-            .unwrap_or_else(|| call.arguments.clone());
-        let _ = loop_tx.send(LoopMsg::ToolActivity(format!("web_search: {query}")));
-        let _ = tts_tx.send(TtsCmd::Sentence("Let me double-check that real quick.".into()));
+        }
 
-        let search_provider = searcher.as_ref().expect("tool_search implies a searcher");
-        let search_base = search_provider
-            .base_url
-            .clone()
-            .unwrap_or_else(|| spec.url.trim_end_matches("/chat/completions").to_string());
-        let result = online_lookup(&client, search_provider, &search_base, &query)
-            .await
-            .unwrap_or_else(|e| format!("Search failed ({e:#}) — answer from what you know and say you could not verify."));
+        // Execute memory tools locally (fire-and-forget to the run-loop);
+        // collect at most one web_search for the round trip.
+        let mut memory_notes: Vec<&str> = Vec::new();
+        let mut search_query: Option<String> = None;
+        for call in &calls {
+            match call.name.as_str() {
+                "remember" => {
+                    if let Some(fact) = arg_str(&call.arguments, "fact") {
+                        let _ = loop_tx.send(LoopMsg::ToolActivity("remember".into()));
+                        let _ = loop_tx.send(LoopMsg::ToolRemember(fact));
+                        memory_notes.push("The fact was saved to memory.");
+                    }
+                }
+                "update_profile" => {
+                    if let Some(md) = arg_str(&call.arguments, "markdown") {
+                        let _ = loop_tx.send(LoopMsg::ToolActivity("profile".into()));
+                        let _ = loop_tx.send(LoopMsg::ToolUpdateProfile(md));
+                        memory_notes.push("The profile was updated.");
+                    }
+                }
+                "web_search" if tool_search && search_query.is_none() => {
+                    search_query = Some(
+                        arg_str(&call.arguments, "query")
+                            .unwrap_or_else(|| call.arguments.clone()),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if memory_notes.is_empty() && search_query.is_none() {
+            break;
+        }
 
         // Round 2 is a CLEAN request: results injected as a USER message and
-        // the tool undeclared. Both details are load-bearing, each found by
+        // the tools undeclared. Both details are load-bearing, each found by
         // live failure: formal tool-result messages and tool_choice "none"
         // still produce more tool calls (OpenRouter/Gemini), and a mid-
         // conversation *system* message is dropped entirely by 9router's
         // Codex translation — the model then claims it has no web access.
+        let mut round2 = String::new();
+        if let Some(query) = search_query {
+            let _ = loop_tx.send(LoopMsg::ToolActivity(format!("web_search: {query}")));
+            let _ =
+                tts_tx.send(TtsCmd::Sentence("Let me double-check that real quick.".into()));
+            let search_provider = searcher.as_ref().expect("tool_search implies a searcher");
+            let search_base = search_provider
+                .base_url
+                .clone()
+                .unwrap_or_else(|| spec.url.trim_end_matches("/chat/completions").to_string());
+            let result = online_lookup(&client, search_provider, &search_base, &query)
+                .await
+                .unwrap_or_else(|e| format!("Search failed ({e:#}) — answer from what you know and say you could not verify."));
+            round2.push_str(&format!("Web search results for \"{query}\":\n{result}\n\n"));
+        }
+        if !memory_notes.is_empty() {
+            round2.push_str(&format!("[{}]\n\n", memory_notes.join(" ")));
+        }
+        round2.push_str(
+            "Answer my question above now. Do not mention the search or memory mechanics.",
+        );
         if let Some(messages) = spec.body["messages"].as_array_mut() {
-            messages.push(serde_json::json!({
-                "role": "user",
-                "content": format!(
-                    "Web search results for \"{query}\":\n{result}\n\nAnswer \
-                     my question above using these results. Do not mention \
-                     the search mechanics."
-                )
-            }));
+            messages.push(serde_json::json!({"role": "user", "content": round2}));
         }
         if let Some(obj) = spec.body.as_object_mut() {
             obj.remove("tools");
