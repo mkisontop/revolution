@@ -216,6 +216,7 @@ pub struct Voice {
 /// - `openai_chat_audio`: the clip rides as an `input_audio` content part in
 ///   a chat completion (OpenRouter-style audio models — e.g.
 ///   `google/gemini-2.5-flash-lite`).
+///
 /// Streaming STT (Deepgram) layers in later.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Stt {

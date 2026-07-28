@@ -4,6 +4,7 @@
 //! - `openai_chat_audio`: an `input_audio` chat-completion part — how
 //!   OpenRouter serves transcription (it has no Whisper endpoint); measured
 //!   1.9 s + exact transcript on `google/gemini-2.5-flash-lite`.
+//!
 //! Streaming STT (Deepgram) can replace either without touching the
 //! orchestrator — it only changes who sends `SttFinal`.
 

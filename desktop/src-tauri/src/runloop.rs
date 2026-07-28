@@ -842,7 +842,7 @@ impl Loop {
                 Turn::SystemNote { .. } => {}
             }
         }
-        (!text.trim().is_empty()).then(|| (g.id, g.session_start_epoch_ms, text))
+        (!text.trim().is_empty()).then_some((g.id, g.session_start_epoch_ms, text))
     }
 
     /// Summarize the outgoing session in the background (game switch).

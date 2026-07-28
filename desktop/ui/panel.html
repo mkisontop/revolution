@@ -2,129 +2,503 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Revolution — panel</title>
+<title>Revolution</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #12141c; color: #e8eaf2; font-family: "Segoe UI", system-ui, sans-serif;
-    font-size: 13px; display: flex; flex-direction: column; height: 100vh; }
-  header { padding: 10px 14px; background: #191c28; border-bottom: 1px solid #2a2e40;
-    display: flex; align-items: center; gap: 10px; }
-  header h1 { font-size: 14px; font-weight: 600; }
-  #game { color: #8fe3b0; font-size: 12px; }
-  main { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex;
-    flex-direction: column; gap: 12px; }
-  section { background: #191c28; border: 1px solid #2a2e40; border-radius: 10px; padding: 10px 12px; }
-  section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-    color: #8b93b5; margin-bottom: 8px; }
-  .kv { display: grid; grid-template-columns: 120px 1fr; row-gap: 4px; font-size: 12px; }
-  .kv b { color: #8b93b5; font-weight: 500; }
-  .ok { color: #8fe3b0; } .bad { color: #ff8f98; } .warn { color: #ffd98f; }
+  :root {
+    --bg: #0b0d15; --card: rgba(255,255,255,.035); --card-solid: #131624;
+    --line: rgba(255,255,255,.08); --line-strong: rgba(140,155,255,.25);
+    --text: #e9ecf8; --dim: #8b93b5; --dimmer: #5c6383;
+    --acc: #6a78ff; --acc2: #22d3ee; --mint: #34d399; --amber: #fbbf24; --rose: #fb7185;
+    --grad: linear-gradient(135deg, #6a78ff, #22d3ee);
+  }
+  html, body { height: 100%; background: transparent; }
+  body { font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    font-size: 13px; color: var(--text); overflow: hidden; }
+  #shell { display: flex; flex-direction: column; height: 100vh;
+    background: linear-gradient(180deg, #0d101c 0%, #0a0c14 100%);
+    border: 1px solid var(--line-strong); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 18px 60px rgba(0,0,0,.6); }
 
-  #transcript { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
-  .line { padding: 7px 10px; border-radius: 9px; line-height: 1.45; white-space: pre-wrap; }
-  .line.user { background: #232a45; align-self: flex-end; max-width: 92%; }
-  .line.assistant { background: #1e2233; align-self: flex-start; max-width: 92%; }
-  .line.note { color: #8b93b5; font-size: 11.5px; font-style: italic; background: none; padding: 2px 6px; }
+  /* ---------- titlebar ---------- */
+  #titlebar { display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 14px;
+    background: rgba(255,255,255,.025); border-bottom: 1px solid var(--line); }
+  #logo { width: 22px; height: 22px; border-radius: 50% 45% 52% 48%;
+    background: radial-gradient(circle at 35% 30%, #8f9dff, #5560e6 65%, #3a44b8);
+    box-shadow: 0 0 12px rgba(95,110,235,.6); flex: none; }
+  #titlebar h1 { font-size: 13.5px; font-weight: 600; letter-spacing: .02em; }
+  #game-badge { font-size: 11.5px; color: var(--mint); background: rgba(52,211,153,.1);
+    border: 1px solid rgba(52,211,153,.25); padding: 2px 9px; border-radius: 20px;
+    max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #game-badge.off { color: var(--dim); background: none; border-color: var(--line); }
+  #model-chip { font-size: 10.5px; color: var(--dimmer); }
+  .tb-btn { width: 26px; height: 26px; border: 0; background: none; color: var(--dim);
+    border-radius: 8px; cursor: pointer; font-size: 13px; display: grid; place-items: center; }
+  .tb-btn:hover { background: rgba(255,255,255,.07); color: var(--text); }
+  #tb-close:hover { background: rgba(251,113,133,.18); color: #ffb3c0; }
 
-  .row { display: flex; gap: 8px; }
-  input[type=text], input[type=password], textarea, select {
-    background: #10121a; color: #e8eaf2; border: 1px solid #2a2e40; border-radius: 8px;
-    padding: 8px 10px; font-size: 13px; width: 100%; font-family: inherit; }
-  textarea { font-family: Consolas, monospace; font-size: 12px; min-height: 220px; resize: vertical; }
-  button { background: #4a56d6; border: 0; color: #fff; border-radius: 8px;
-    padding: 8px 14px; font-size: 13px; cursor: pointer; white-space: nowrap; }
-  button:hover { background: #5a66ec; }
-  button.ghost { background: #262b40; }
+  /* ---------- tabs ---------- */
+  #tabs { display: flex; gap: 2px; padding: 8px 12px 0; }
+  #tabs button { flex: none; border: 0; background: none; color: var(--dim);
+    padding: 7px 14px; font-size: 12.5px; cursor: pointer; border-radius: 9px 9px 0 0;
+    border-bottom: 2px solid transparent; transition: color .15s; font-family: inherit; }
+  #tabs button:hover { color: var(--text); }
+  #tabs button.on { color: var(--text); border-image: var(--grad) 1;
+    border-bottom: 2px solid; }
+
+  main { flex: 1; overflow-y: auto; padding: 12px 14px 14px; scrollbar-width: thin;
+    scrollbar-color: #2a2f47 transparent; }
+  .tab { display: none; }
+  .tab.on { display: block; }
+
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 13px;
+    padding: 12px 13px; margin-bottom: 12px; }
+  section h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--dim); margin-bottom: 10px; font-weight: 600; }
+  .hint { color: var(--dimmer); font-size: 11px; line-height: 1.5; }
+  .ok { color: var(--mint); } .bad { color: var(--rose); } .warn { color: var(--amber); }
+
+  /* ---------- inputs ---------- */
+  input[type=text], input[type=password], input[type=number], textarea, select {
+    background: rgba(0,0,0,.32); color: var(--text); border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px 10px; font-size: 12.5px; width: 100%;
+    font-family: inherit; outline: none; transition: border-color .15s; }
+  input:focus, textarea:focus, select:focus { border-color: var(--acc); }
+  textarea { font-family: Consolas, monospace; font-size: 11.5px; resize: vertical; }
+  button.primary { background: var(--grad); border: 0; color: #fff; border-radius: 9px;
+    padding: 8px 16px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+    font-family: inherit; transition: filter .15s, transform .1s; white-space: nowrap; }
+  button.primary:hover { filter: brightness(1.12); }
+  button.primary:active { transform: scale(.97); }
+  button.primary:disabled { filter: saturate(.3) brightness(.7); cursor: default; }
+  button.ghost { background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    color: var(--text); border-radius: 9px; padding: 7px 13px; font-size: 12px;
+    cursor: pointer; font-family: inherit; white-space: nowrap; }
+  button.ghost:hover { background: rgba(255,255,255,.1); }
+  button.danger-ghost { background: none; border: 1px solid rgba(251,113,133,.3);
+    color: #ff9fb0; border-radius: 9px; padding: 7px 13px; font-size: 12px; cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  label.field { display: block; margin-bottom: 8px; }
+  label.field .lbl { display: block; font-size: 10.5px; color: var(--dim); margin-bottom: 4px; }
+
+  /* toggle switch */
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 7px 0; }
+  .switch .txt { flex: 1; }
+  .switch .txt b { font-weight: 500; font-size: 12.5px; display: block; }
+  .switch .txt span { font-size: 11px; color: var(--dimmer); }
+  .tgl { position: relative; width: 38px; height: 21px; flex: none; cursor: pointer; }
+  .tgl input { opacity: 0; width: 0; height: 0; }
+  .tgl i { position: absolute; inset: 0; background: rgba(255,255,255,.12);
+    border-radius: 20px; transition: background .2s; }
+  .tgl i::after { content: ""; position: absolute; top: 2.5px; left: 3px; width: 16px;
+    height: 16px; background: #cfd4e8; border-radius: 50%; transition: transform .2s; }
+  .tgl input:checked + i { background: var(--acc); }
+  .tgl input:checked + i::after { transform: translateX(16px); background: #fff; }
+
+  /* preset chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chips button { border: 1px solid var(--line); background: rgba(255,255,255,.04);
+    color: var(--dim); border-radius: 20px; padding: 5px 12px; font-size: 11.5px;
+    cursor: pointer; font-family: inherit; transition: all .15s; }
+  .chips button:hover { color: var(--text); border-color: var(--line-strong); }
+  .chips button.on { color: #fff; background: rgba(106,120,255,.22);
+    border-color: var(--acc); }
+
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 12px; white-space: nowrap; }
+  .badge.ok { background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.3); }
+  .badge.no { background: rgba(251,113,133,.1); border: 1px solid rgba(251,113,133,.28); color: #ff9fb0; }
+
+  /* ---------- chat ---------- */
+  #chat-wrap { display: flex; flex-direction: column; height: 100%; }
+  #transcript { flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+    gap: 8px; padding: 4px 2px 10px; scrollbar-width: thin; scrollbar-color: #2a2f47 transparent; }
+  .line { padding: 8px 12px; border-radius: 14px; line-height: 1.5; white-space: pre-wrap;
+    max-width: 88%; font-size: 12.5px; animation: pop .18s ease; }
+  @keyframes pop { from { opacity: 0; transform: translateY(4px); } }
+  .line.user { background: linear-gradient(135deg, rgba(106,120,255,.32), rgba(34,211,238,.18));
+    border: 1px solid rgba(106,120,255,.3); align-self: flex-end; border-bottom-right-radius: 5px; }
+  .line.assistant { background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    align-self: flex-start; border-bottom-left-radius: 5px; }
+  .line.note { color: var(--dimmer); font-size: 11px; font-style: italic; background: none;
+    border: 0; align-self: center; padding: 0 6px; }
+  .lat-chip { align-self: flex-start; font-size: 10px; color: var(--dimmer); padding: 0 8px;
+    margin-top: -4px; }
+  .lat-chip b { color: var(--dim); font-weight: 500; }
+  #typing { display: none; align-self: flex-start; padding: 10px 14px; }
+  #typing.on { display: block; }
+  #typing i { display: inline-block; width: 5px; height: 5px; margin-right: 3px;
+    background: var(--dim); border-radius: 50%; animation: tdots 1.2s infinite; }
+  #typing i:nth-child(2) { animation-delay: .18s; } #typing i:nth-child(3) { animation-delay: .36s; }
+  @keyframes tdots { 0%,60%,100% { opacity: .25; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); } }
+  #empty-chat { text-align: center; color: var(--dimmer); padding: 40px 20px; font-size: 12px;
+    line-height: 1.8; }
+  #empty-chat .big { font-size: 30px; }
+  #askbar { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+  #ptt-hint { text-align: center; font-size: 10.5px; color: var(--dimmer); padding-top: 6px; }
+  #ptt-hint b { color: var(--dim); background: rgba(255,255,255,.07); padding: 1px 7px;
+    border-radius: 5px; font-weight: 500; }
+
+  /* ---------- memory ---------- */
+  .fact { display: flex; gap: 8px; align-items: flex-start; padding: 8px 4px;
+    border-bottom: 1px solid rgba(255,255,255,.05); }
+  .fact:last-child { border-bottom: 0; }
+  .fact .kind { flex: none; font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--acc2); background: rgba(34,211,238,.08); border: 1px solid rgba(34,211,238,.2);
+    padding: 2px 7px; border-radius: 10px; margin-top: 1px; }
+  .fact .txt { flex: 1; line-height: 1.45; font-size: 12px; }
+  .fact .when { flex: none; font-size: 10px; color: var(--dimmer); margin-top: 2px; }
+  .fact button { flex: none; border: 0; background: none; color: var(--dimmer); cursor: pointer;
+    font-size: 13px; padding: 0 4px; border-radius: 5px; }
+  .fact button:hover { color: var(--rose); }
+
+  /* ---------- diagnostics ---------- */
+  .kv { display: grid; grid-template-columns: 130px 1fr; row-gap: 5px; font-size: 12px; }
+  .kv b { color: var(--dim); font-weight: 500; }
   #latency table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  #latency td { padding: 3px 4px; border-bottom: 1px solid #232738; }
+  #latency td { padding: 4px 4px; border-bottom: 1px solid rgba(255,255,255,.05); }
   #latency td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
-  #budget-pill { padding: 2px 8px; border-radius: 20px; font-size: 11px; }
-  #budget-pill.pass { background: #143526; color: #8fe3b0; }
-  #budget-pill.fail { background: #3c1a20; color: #ff8f98; }
-  .muted { color: #8b93b5; font-size: 11.5px; }
-  #toast { position: fixed; bottom: 12px; left: 14px; right: 14px; background: #262b40;
-    border: 1px solid #3a4160; padding: 9px 12px; border-radius: 9px; opacity: 0;
-    transition: opacity .25s; pointer-events: none; font-size: 12.5px; }
+  #budget-pill { padding: 2px 9px; border-radius: 20px; font-size: 10.5px; }
+  #budget-pill.pass { background: rgba(52,211,153,.12); color: var(--mint); }
+  #budget-pill.fail { background: rgba(251,113,133,.12); color: var(--rose); }
+  .meter { height: 7px; background: rgba(255,255,255,.07); border-radius: 5px; overflow: hidden;
+    margin: 7px 0 4px; }
+  .meter i { display: block; height: 100%; background: var(--grad); border-radius: 5px;
+    transition: width .4s; }
+
+  /* ---------- save bar / toast ---------- */
+  #savebar { display: none; position: sticky; bottom: 0; gap: 8px; align-items: center;
+    background: rgba(15,18,30,.97); border: 1px solid var(--line-strong); border-radius: 12px;
+    padding: 9px 12px; box-shadow: 0 -6px 24px rgba(0,0,0,.4); }
+  #savebar.on { display: flex; }
+  #toast { position: fixed; bottom: 14px; left: 16px; right: 16px;
+    background: rgba(20,23,38,.97); border: 1px solid var(--line-strong);
+    padding: 10px 13px; border-radius: 11px; opacity: 0; transition: opacity .25s;
+    pointer-events: none; font-size: 12px; z-index: 60; }
   #toast.show { opacity: 1; }
+
+  /* ---------- onboarding ---------- */
+  #onboard { position: fixed; inset: 0; background: rgba(8,10,17,.9);
+    backdrop-filter: blur(8px); z-index: 50; display: none; place-items: center;
+    border-radius: 14px; }
+  #onboard.on { display: grid; }
+  #ob-card { width: min(400px, 88vw); background: var(--card-solid);
+    border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px;
+    box-shadow: 0 20px 70px rgba(0,0,0,.6); }
+  #ob-card .pet-face { width: 56px; height: 56px; margin: 0 auto 12px;
+    border-radius: 47% 53% 51% 49% / 52% 48% 55% 45%;
+    background: radial-gradient(circle at 35% 30%, #8f9dff, #5560e6 65%, #3a44b8);
+    box-shadow: 0 0 30px rgba(95,110,235,.5); position: relative; }
+  #ob-card .pet-face::before, #ob-card .pet-face::after { content: ""; position: absolute;
+    top: 20px; width: 7px; height: 9px; background: #101322; border-radius: 50%; }
+  #ob-card .pet-face::before { left: 17px; } #ob-card .pet-face::after { right: 17px; }
+  #ob-card h3 { text-align: center; font-size: 16px; margin-bottom: 4px; }
+  #ob-card .sub { text-align: center; color: var(--dim); font-size: 12px; margin-bottom: 18px; }
+  .ob-step { display: none; }
+  .ob-step.on { display: block; animation: pop .25s ease; }
+  .ob-dots { display: flex; gap: 5px; justify-content: center; margin-top: 18px; }
+  .ob-dots i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,.15); }
+  .ob-dots i.on { background: var(--acc); }
+  .ob-nav { display: flex; gap: 8px; margin-top: 16px; }
+  .ob-nav .spacer { flex: 1; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Revolution</h1>
-  <span id="game">no game detected</span>
-  <span style="flex:1"></span>
-  <span class="muted" id="model"></span>
-</header>
-<main>
-  <section>
-    <h2>Ask Rev</h2>
-    <div class="row">
-      <input type="text" id="ask" placeholder="Type a question (or hold the PTT key and speak)…" />
-      <button id="send">Ask</button>
-    </div>
-    <div id="transcript" style="margin-top:10px"></div>
-  </section>
+<div id="shell">
+  <div id="titlebar" data-tauri-drag-region>
+    <div id="logo" data-tauri-drag-region></div>
+    <h1 data-tauri-drag-region>Revolution</h1>
+    <span id="game-badge" class="off">no game</span>
+    <span style="flex:1" data-tauri-drag-region></span>
+    <span id="model-chip"></span>
+    <button class="tb-btn" id="tb-mute" title="Mute Rev">🔊</button>
+    <button class="tb-btn" id="tb-min" title="Minimize">—</button>
+    <button class="tb-btn" id="tb-close" title="Hide panel">✕</button>
+  </div>
 
-  <section id="latency">
-    <h2>Latency ledger <span id="budget-pill"></span></h2>
-    <table>
-      <tr><td>release → first audio</td><td id="l-total">—</td></tr>
-      <tr><td>STT</td><td id="l-stt">—</td></tr>
-      <tr><td>LLM first token</td><td id="l-ttft">—</td></tr>
-      <tr><td>TTS first audio</td><td id="l-tts">—</td></tr>
-    </table>
-    <div class="muted" id="usage" style="margin-top:6px"></div>
-  </section>
+  <div id="tabs">
+    <button data-tab="chat" class="on">Chat</button>
+    <button data-tab="memory">Memory</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="advanced">Advanced</button>
+  </div>
 
-  <section>
-    <h2>Status</h2>
-    <div class="kv" id="status-kv"></div>
-    <div id="warnings" style="margin-top:6px"></div>
-  </section>
+  <main>
+    <!-- ================= CHAT ================= -->
+    <div class="tab on" id="tab-chat">
+      <div id="chat-wrap">
+        <div id="transcript">
+          <div id="empty-chat">
+            <div class="big">👋</div>
+            Hey, I'm Rev — your co-op friend who watches the game with you.<br>
+            Hold <b id="ec-key">PageUp</b> and talk, or type below.
+          </div>
+          <div id="typing"><i></i><i></i><i></i></div>
+        </div>
+        <div id="askbar">
+          <input type="text" id="ask" placeholder="Ask about your game…" autocomplete="off" />
+          <button class="primary" id="send">Ask</button>
+        </div>
+        <div id="ptt-hint">hold <b id="ptt-key">PageUp</b> to talk · release to send</div>
+      </div>
+    </div>
 
-  <section>
-    <h2>Remember something</h2>
-    <div class="row">
-      <input type="text" id="memo" placeholder="e.g. I'm going dex build this run, don't spoil act 3" />
-      <button id="memo-save" class="ghost">Save</button>
+    <!-- ================= MEMORY ================= -->
+    <div class="tab" id="tab-memory">
+      <section>
+        <h2>Game</h2>
+        <div class="row">
+          <select id="mem-game"></select>
+          <button class="ghost" id="mem-refresh">↻</button>
+        </div>
+      </section>
+      <section>
+        <h2>Player profile <span class="hint">(what Rev knows about how you play)</span></h2>
+        <textarea id="mem-profile" rows="5" placeholder="No profile yet — Rev builds this as you play, or write your own."></textarea>
+        <div class="row" style="margin-top:8px; justify-content:flex-end">
+          <button class="ghost" id="mem-profile-save">Save profile</button>
+        </div>
+      </section>
+      <section>
+        <h2>Memories</h2>
+        <div id="mem-facts"><div class="hint">No memories yet.</div></div>
+      </section>
+      <section>
+        <h2>Teach Rev something (current game)</h2>
+        <div class="row">
+          <input type="text" id="memo" placeholder="e.g. I'm going dex build, don't spoil act 3" />
+          <button class="ghost" id="memo-save">Save</button>
+        </div>
+      </section>
     </div>
-  </section>
 
-  <section>
-    <h2>API keys → Windows Credential Manager</h2>
-    <div class="row" style="margin-bottom:6px">
-      <select id="key-name">
-        <option value="revolution/qa">revolution/qa (main model)</option>
-        <option value="revolution/stt">revolution/stt (whisper)</option>
-        <option value="revolution/ambient">revolution/ambient</option>
-        <option value="revolution/deep">revolution/deep</option>
-      </select>
-    </div>
-    <div class="row">
-      <input type="password" id="key-value" placeholder="paste key — stored in Credential Manager, never in a file" />
-      <button id="key-save" class="ghost">Store</button>
-    </div>
-    <div class="muted" style="margin-top:6px">config.toml references these as <code>keyring:revolution/qa</code> etc. Restart the app after storing.</div>
-  </section>
+    <!-- ================= SETTINGS ================= -->
+    <div class="tab" id="tab-settings">
+      <section>
+        <h2>Brain</h2>
+        <div class="chips" id="brain-presets"></div>
+        <div class="grid2">
+          <label class="field"><span class="lbl">model</span>
+            <input type="text" id="s-qa-model" /></label>
+          <label class="field"><span class="lbl">endpoint (base url)</span>
+            <input type="text" id="s-qa-base" placeholder="provider default" /></label>
+          <label class="field"><span class="lbl">reasoning effort</span>
+            <select id="s-qa-effort">
+              <option value="">model default (slow on reasoning models)</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low — snappiest</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select></label>
+          <label class="field"><span class="lbl">max answer tokens</span>
+            <input type="number" id="s-qa-tokens" min="100" max="4000" /></label>
+        </div>
+        <div class="switch"><div class="txt"><b>Web search when unsure</b>
+          <span>Rev looks things up instead of guessing patch facts</span></div>
+          <label class="tgl"><input type="checkbox" id="s-qa-web"><i></i></label></div>
+        <div class="row" style="margin-top:6px">
+          <input type="password" id="s-qa-key" placeholder="API key for this brain" />
+          <button class="ghost" id="s-qa-key-save">Store</button>
+          <span class="badge" id="s-qa-key-badge"></span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="primary" id="s-test-brain">Test brain</button>
+          <span class="hint" id="s-test-result"></span>
+        </div>
+      </section>
 
-  <section>
-    <h2>config.toml</h2>
-    <div class="row" style="margin-bottom:8px">
-      <button id="cfg-load" class="ghost">Load</button>
-      <button id="cfg-save">Validate + Save</button>
-      <button id="cfg-open" class="ghost">Open folder</button>
-      <span class="muted" id="cfg-path" style="align-self:center"></span>
+      <section>
+        <h2>Voice — Rev speaking</h2>
+        <div class="chips" id="tts-presets">
+          <button data-tts="natural">Natural neural voice</button>
+          <button data-tts="windows">Windows offline voice</button>
+        </div>
+        <div class="grid2">
+          <label class="field"><span class="lbl">voice</span>
+            <input type="text" id="s-tts-voice" placeholder="marin / cedar / Zira…" /></label>
+          <label class="field" id="s-tts-model-wrap"><span class="lbl">audio model</span>
+            <input type="text" id="s-tts-model" /></label>
+        </div>
+        <div class="row"><button class="ghost" id="s-tts-test">▶ Test voice</button>
+          <span class="hint">natural voice falls back to Windows automatically if it fails</span></div>
+      </section>
+
+      <section>
+        <h2>Voice — you speaking (transcription)</h2>
+        <div class="chips" id="stt-presets">
+          <button data-stt="groq">Groq Whisper (free, recommended)</button>
+          <button data-stt="chataudio">OpenRouter audio model</button>
+          <button data-stt="off">Off (type only)</button>
+        </div>
+        <div class="row">
+          <input type="password" id="s-stt-key" placeholder="key for the transcriber (Groq key here)" />
+          <button class="ghost" id="s-stt-key-save">Store</button>
+          <span class="badge" id="s-stt-key-badge"></span>
+        </div>
+        <div class="hint" style="margin-top:6px">Groq's free tier runs real Whisper — it can only
+          transcribe, never talk back. Grab a key at console.groq.com.</div>
+      </section>
+
+      <section>
+        <h2>Push-to-talk</h2>
+        <div class="grid2">
+          <label class="field"><span class="lbl">key</span>
+            <input type="text" id="s-ptt" placeholder="PageUp, F13, ScrollLock…" /></label>
+          <div class="switch" style="padding-top:14px"><div class="txt"><b>Tap to toggle</b>
+            <span>instead of hold-to-talk</span></div>
+            <label class="tgl"><input type="checkbox" id="s-ptt-toggle"><i></i></label></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Companion</h2>
+        <div class="switch"><div class="txt"><b>Greet when a game starts</b>
+          <span>a short spoken hello when your game gets focus</span></div>
+          <label class="tgl"><input type="checkbox" id="s-greet"><i></i></label></div>
+        <div class="switch"><div class="txt"><b>Hype mode</b>
+          <span>occasional couch commentary in quiet moments (costs tokens)</span></div>
+          <label class="tgl"><input type="checkbox" id="s-hype"><i></i></label></div>
+        <label class="field" style="margin-top:4px"><span class="lbl">quiet gap between remarks (seconds)</span>
+          <input type="number" id="s-hype-gap" min="30" max="600" /></label>
+      </section>
+
+      <section>
+        <h2>Privacy</h2>
+        <div class="switch"><div class="txt"><b>Upload frames only when asked</b>
+          <span>screenshots leave this PC only with an explicit question</span></div>
+          <label class="tgl"><input type="checkbox" id="s-upload-ask"><i></i></label></div>
+        <div class="switch"><div class="txt"><b>Capture only while a game is focused</b>
+          <span>asking still grabs a one-shot frame as consent</span></div>
+          <label class="tgl"><input type="checkbox" id="s-fg-only"><i></i></label></div>
+        <div class="switch"><div class="txt"><b>Capture indicator dot</b>
+          <span>the red dot on the pet while capture is live</span></div>
+          <label class="tgl"><input type="checkbox" id="s-cap-ind"><i></i></label></div>
+      </section>
+
+      <section>
+        <h2>Budget</h2>
+        <div class="grid2">
+          <label class="field"><span class="lbl">monthly cap (USD)</span>
+            <input type="number" id="s-cap" min="0" step="1" /></label>
+          <div></div>
+          <label class="field"><span class="lbl">$ / 1M input tokens</span>
+            <input type="number" id="s-price-in" min="0" step="0.01" /></label>
+          <label class="field"><span class="lbl">$ / 1M output tokens</span>
+            <input type="number" id="s-price-out" min="0" step="0.01" /></label>
+        </div>
+        <div class="hint">Leave prices at 0 for token-only metering (the cap can't be
+          enforced without knowing your model's prices).</div>
+      </section>
+
+      <section>
+        <h2>Startup</h2>
+        <div class="switch"><div class="txt"><b>Start with Windows</b>
+          <span>Rev launches quietly at login</span></div>
+          <label class="tgl"><input type="checkbox" id="s-autostart"><i></i></label></div>
+      </section>
+
+      <div id="savebar">
+        <span style="flex:1; font-size:12px">Unsaved changes</span>
+        <button class="ghost" id="s-revert">Revert</button>
+        <button class="primary" id="s-save">Save</button>
+        <button class="primary" id="s-restart" style="display:none">Restart Rev to apply</button>
+      </div>
     </div>
-    <textarea id="cfg" spellcheck="false" placeholder="Press Load…"></textarea>
-    <div class="muted" style="margin-top:4px">Changes apply on next launch.</div>
-  </section>
-</main>
+
+    <!-- ================= ADVANCED ================= -->
+    <div class="tab" id="tab-advanced">
+      <section>
+        <h2>Diagnostics</h2>
+        <div class="kv" id="status-kv"></div>
+        <div id="warnings" style="margin-top:6px"></div>
+      </section>
+      <section id="latency">
+        <h2>Last voice turn <span id="budget-pill"></span></h2>
+        <table>
+          <tr><td>release → first audio</td><td id="l-total">—</td></tr>
+          <tr><td>transcription</td><td id="l-stt">—</td></tr>
+          <tr><td>brain first token</td><td id="l-ttft">—</td></tr>
+          <tr><td>voice first audio</td><td id="l-tts">—</td></tr>
+        </table>
+        <div class="hint" id="usage-line" style="margin-top:6px"></div>
+      </section>
+      <section>
+        <h2>This month</h2>
+        <div id="month-usage" class="hint">loading…</div>
+        <div class="meter"><i id="month-meter" style="width:0%"></i></div>
+        <div class="hint" id="month-cap-line"></div>
+      </section>
+      <section>
+        <h2>config.toml (raw)</h2>
+        <div class="row" style="margin-bottom:8px">
+          <button class="ghost" id="cfg-load">Load</button>
+          <button class="ghost" id="cfg-save">Validate + Save</button>
+          <button class="ghost" id="cfg-open">Open folder</button>
+        </div>
+        <textarea id="cfg" rows="14" spellcheck="false" placeholder="Press Load…"></textarea>
+        <div class="hint" style="margin-top:4px" id="cfg-path"></div>
+      </section>
+      <section>
+        <h2>Actions</h2>
+        <div class="row" style="flex-wrap:wrap">
+          <button class="ghost" id="adv-router">Start 9router</button>
+          <button class="ghost" id="adv-restart">Restart Rev</button>
+          <button class="danger-ghost" id="adv-quit">Quit Rev</button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ================= ONBOARDING ================= -->
+<div id="onboard">
+  <div id="ob-card">
+    <div class="pet-face"></div>
+    <h3>Meet Rev</h3>
+    <div class="sub">Your friend who watches the game with you.<br>Two minutes of setup.</div>
+
+    <div class="ob-step on" data-step="0">
+      <div class="hint" style="margin-bottom:8px">Pick the brain Rev thinks with:</div>
+      <div class="chips" id="ob-presets" style="flex-direction:column; align-items:stretch"></div>
+      <div class="ob-nav"><span class="spacer"></span>
+        <button class="primary" id="ob-next0" disabled>Next</button></div>
+    </div>
+
+    <div class="ob-step" data-step="1">
+      <div class="hint" style="margin-bottom:8px" id="ob-key-hint">Paste your API key:</div>
+      <input type="password" id="ob-key" placeholder="sk-…" />
+      <div class="ob-nav">
+        <button class="ghost" id="ob-back1">Back</button><span class="spacer"></span>
+        <button class="primary" id="ob-next1">Store key</button></div>
+    </div>
+
+    <div class="ob-step" data-step="2">
+      <div class="hint" style="margin-bottom:10px; text-align:center" id="ob-test-msg">
+        Let's make sure Rev can think.</div>
+      <div style="text-align:center">
+        <button class="primary" id="ob-test">Test the brain</button>
+      </div>
+      <div class="ob-nav">
+        <button class="ghost" id="ob-back2">Back</button><span class="spacer"></span>
+        <button class="primary" id="ob-done" style="display:none">Start playing →</button></div>
+    </div>
+
+    <div class="ob-dots"><i class="on"></i><i></i><i></i></div>
+    <div style="text-align:center; margin-top:12px">
+      <button class="ghost" id="ob-skip" style="font-size:11px; padding:4px 10px">skip for now</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 <script>
   const T = window.__TAURI__;
   const invoke = T.core.invoke;
   const listen = T.event.listen;
   const $ = (id) => document.getElementById(id);
+  const win = () => (T.window.getCurrentWindow || T.window.getCurrent).call(T.window);
 
   function toast(t) {
     $("toast").textContent = t;
@@ -134,33 +508,78 @@
   }
   listen("rev:toast", (e) => toast(e.payload));
 
-  // ---- transcript ----
-  let streamEl = null;
+  // ---------- titlebar ----------
+  $("tb-min").onclick = () => win().minimize();
+  $("tb-close").onclick = () => win().hide();
+  let muted = false;
+  $("tb-mute").onclick = () => invoke("set_muted", { muted: !muted });
+
+  // ---------- tabs ----------
+  document.querySelectorAll("#tabs button").forEach((b) => {
+    b.onclick = () => {
+      document.querySelectorAll("#tabs button").forEach((x) => x.classList.remove("on"));
+      document.querySelectorAll(".tab").forEach((x) => x.classList.remove("on"));
+      b.classList.add("on");
+      $("tab-" + b.dataset.tab).classList.add("on");
+      if (b.dataset.tab === "memory") loadMemory();
+      if (b.dataset.tab === "advanced") loadMonth();
+    };
+  });
+
+  // ---------- chat ----------
+  let streamEl = null, lastAssistant = null;
   function addLine(role, text) {
+    $("empty-chat")?.remove();
     const d = document.createElement("div");
     d.className = "line " + role;
     d.textContent = text;
-    $("transcript").append(d);
+    $("transcript").insertBefore(d, $("typing"));
     $("transcript").scrollTop = 1e9;
     return d;
   }
   listen("rev:transcript", (e) => {
     const { role, text } = e.payload;
+    if (role === "user") {
+      addLine("user", text);
+      $("typing").classList.add("on");
+      $("transcript").scrollTop = 1e9;
+      return;
+    }
+    $("typing").classList.remove("on");
     if (role === "assistant" && streamEl) {
       streamEl.textContent = text; // replace streamed partial with final
+      lastAssistant = streamEl;
       streamEl = null;
     } else {
-      addLine(role, text);
+      lastAssistant = addLine(role, text);
     }
     $("transcript").scrollTop = 1e9;
   });
   listen("rev:delta", (e) => {
+    $("typing").classList.remove("on");
     if (!streamEl) streamEl = addLine("assistant", "");
     streamEl.textContent += e.payload;
     $("transcript").scrollTop = 1e9;
   });
   listen("rev:speech-done", () => { streamEl = null; });
-
+  listen("rev:latency", (e) => {
+    const p = e.payload;
+    $("l-total").textContent = p.total_ms + " ms";
+    $("l-stt").textContent = p.stt_ms + " ms";
+    $("l-ttft").textContent = p.llm_ttft_ms + " ms";
+    $("l-tts").textContent = p.tts_ms + " ms";
+    const pill = $("budget-pill");
+    pill.textContent = p.within_budget ? "within 2s target" : "over 2s target";
+    pill.className = p.within_budget ? "pass" : "fail";
+    if (lastAssistant) {
+      const chip = document.createElement("div");
+      chip.className = "lat-chip";
+      chip.innerHTML = `<b>${(p.total_ms / 1000).toFixed(1)}s</b> · ear ${p.stt_ms} · brain ${p.llm_ttft_ms} · voice ${p.tts_ms} ${p.within_budget ? "✓" : ""}`;
+      lastAssistant.after(chip);
+      lastAssistant = null;
+      $("transcript").scrollTop = 1e9;
+    }
+  });
   function ask() {
     const v = $("ask").value.trim();
     if (!v) return;
@@ -170,50 +589,90 @@
   $("send").onclick = ask;
   $("ask").addEventListener("keydown", (e) => e.key === "Enter" && ask());
 
-  // ---- latency ----
-  listen("rev:latency", (e) => {
-    const p = e.payload;
-    $("l-total").textContent = p.total_ms + " ms";
-    $("l-stt").textContent = p.stt_ms + " ms";
-    $("l-ttft").textContent = p.llm_ttft_ms + " ms";
-    $("l-tts").textContent = p.tts_ms + " ms";
-    const pill = $("budget-pill");
-    pill.textContent = p.within_budget ? "within 2s budget" : "over 2s budget";
-    pill.className = p.within_budget ? "pass" : "fail";
-  });
-
-  // ---- status ----
+  // ---------- status ----------
+  let lastStatus = null;
   function renderStatus(s) {
-    $("game").textContent = s.game
-      ? "▶ " + s.game
-      : "no game detected" + (s.foreground_exe ? " (" + s.foreground_exe + ")" : "");
-    $("model").textContent = s.qa_kind + " · " + s.qa_model;
+    lastStatus = s;
+    const gb = $("game-badge");
+    if (s.game) { gb.textContent = "▶ " + s.game; gb.className = ""; }
+    else { gb.textContent = "no game"; gb.className = "off"; }
+    $("model-chip").textContent = s.qa_model || "";
+    muted = !!s.muted;
+    $("tb-mute").textContent = muted ? "🔇" : "🔊";
+    $("ptt-key").textContent = s.hotkey;
+    const ec = $("ec-key"); if (ec) ec.textContent = s.hotkey;
     const rows = [
       ["capture", s.capture_error ? ["bad", s.capture_error]
         : s.capture_enabled ? ["ok", `on — ${s.keyframes} keyframes, ring ${s.ring_frames} frames / ${s.ring_kb} KB`]
-        : ["warn", "paused (no game in foreground)"]],
-      ["mic", [s.mic.includes(":") && !s.mic.includes("mic:") ? "ok" : "", s.mic]],
+        : ["warn", "paused (no game in foreground — asking still snaps a frame)"]],
+      ["microphone", [s.mic.includes(":") && !s.mic.includes("mic:") ? "ok" : "", s.mic]],
       ["voice ask (STT)", s.stt_ready ? ["ok", "configured"] : ["warn", "not configured — typed input only"]],
-      ["model key", s.qa_ready ? ["ok", "ready"] : ["bad", "missing — store a key below"]],
-      ["PTT hotkey", ["", s.hotkey + " (hold to talk)"]],
+      ["brain key", s.qa_ready ? ["ok", "ready"] : ["bad", "missing"]],
+      ["brain", ["", `${s.qa_kind} · ${s.qa_model}`]],
+      ["push-to-talk", ["", s.hotkey + (s.hype_mode ? " · hype mode on" : "")]],
     ];
     $("status-kv").innerHTML = rows
       .map(([k, [cls, v]]) => `<b>${k}</b><span class="${cls}">${v}</span>`)
       .join("");
     $("warnings").innerHTML = (s.warnings || [])
-      .map((w) => `<div class="warn">⚠ ${w}</div>`)
+      .map((w) => `<div class="warn" style="font-size:11.5px">⚠ ${w}</div>`)
       .join("");
     $("cfg-path").textContent = s.config_path;
     if (s.last_usage) {
       const u = s.last_usage;
-      $("usage").textContent =
+      $("usage-line").textContent =
         `last turn: ${u.input_tokens} in (${u.cache_read_tokens} cached) / ${u.output_tokens} out`;
     }
+    if (!s.qa_ready && !onboardDismissed) $("onboard").classList.add("on");
   }
   listen("rev:status", (e) => renderStatus(e.payload));
   invoke("get_status").then(renderStatus).catch(() => {});
 
-  // ---- memory ----
+  // ---------- memory ----------
+  async function loadMemory() {
+    try {
+      const games = await invoke("list_games");
+      const sel = $("mem-game");
+      const prev = sel.value;
+      sel.innerHTML = games.map((g) =>
+        `<option value="${g.id}">${g.name} (${g.facts})</option>`).join("")
+        || `<option value="">no games yet</option>`;
+      if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+      else if (lastStatus?.game_id) sel.value = String(lastStatus.game_id);
+      await loadFacts();
+    } catch (e) { toast("memory: " + e); }
+  }
+  async function loadFacts() {
+    const id = parseInt($("mem-game").value, 10);
+    if (!id) { $("mem-facts").innerHTML = `<div class="hint">No memories yet.</div>`; $("mem-profile").value = ""; return; }
+    const [facts, profile] = await Promise.all([
+      invoke("list_facts", { gameId: id }),
+      invoke("get_profile", { gameId: id }),
+    ]);
+    $("mem-profile").value = profile || "";
+    $("mem-facts").innerHTML = facts.length ? "" : `<div class="hint">No memories for this game yet.</div>`;
+    for (const f of facts) {
+      const d = document.createElement("div");
+      d.className = "fact";
+      const ago = f.updated_at > 1e12 ? new Date(f.updated_at).toLocaleDateString() : "";
+      d.innerHTML = `<span class="kind">${f.kind}</span><span class="txt"></span>
+        <span class="when">${ago}</span><button title="forget">✕</button>`;
+      d.querySelector(".txt").textContent = f.text;
+      d.querySelector("button").onclick = async () => {
+        await invoke("forget_fact", { factId: f.id });
+        d.remove();
+      };
+      $("mem-facts").append(d);
+    }
+  }
+  $("mem-game").onchange = loadFacts;
+  $("mem-refresh").onclick = loadMemory;
+  $("mem-profile-save").onclick = async () => {
+    const id = parseInt($("mem-game").value, 10);
+    if (!id) return toast("No game selected.");
+    await invoke("set_profile", { gameId: id, markdown: $("mem-profile").value });
+    toast("Profile saved.");
+  };
   $("memo-save").onclick = () => {
     const v = $("memo").value.trim();
     if (!v) return;
@@ -221,28 +680,336 @@
     $("memo").value = "";
   };
 
-  // ---- keys ----
-  $("key-save").onclick = async () => {
-    const v = $("key-value").value.trim();
-    if (!v) return;
+  // ---------- settings ----------
+  const PRESETS = [
+    { id: "9router", label: "GPT-5.6 on your ChatGPT sub (9router, free)", kind: "openai_compat",
+      base: "http://localhost:20128/v1", model: "cx/gpt-5.6-sol", slot: "revolution/9router",
+      keyref: "keyring:revolution/9router", hint: "9router key from its dashboard (localhost:20128)" },
+    { id: "openrouter", label: "OpenRouter (any model, fastest setup)", kind: "openai_compat",
+      base: "https://openrouter.ai/api/v1", model: "openai/gpt-5.6-terra", slot: "revolution/qa",
+      keyref: "keyring:revolution/qa", hint: "sk-or-… key from openrouter.ai" },
+    { id: "openai", label: "OpenAI direct", kind: "openai_compat",
+      base: "https://api.openai.com/v1", model: "gpt-5-mini", slot: "revolution/qa",
+      keyref: "keyring:revolution/qa", hint: "sk-… key from platform.openai.com" },
+    { id: "gemini", label: "Google Gemini direct", kind: "gemini",
+      base: "", model: "gemini-flash-latest", slot: "revolution/qa",
+      keyref: "keyring:revolution/qa", hint: "key from aistudio.google.com" },
+    { id: "anthropic", label: "Anthropic Claude", kind: "anthropic",
+      base: "", model: "claude-sonnet-5", slot: "revolution/qa",
+      keyref: "keyring:revolution/qa", hint: "sk-ant-… key from console.anthropic.com" },
+  ];
+  let S = null;          // loaded settings snapshot
+  let sDirty = false;
+  let sPreset = null;    // chosen preset object (drives kind/key slot)
+  let sTts = null;       // "natural" | "windows"
+  let sStt = null;       // "groq" | "chataudio" | "off"
+
+  function markDirty() { sDirty = true; $("savebar").classList.add("on"); }
+  document.querySelectorAll("#tab-settings input, #tab-settings select")
+    .forEach((el) => el.addEventListener("change", markDirty));
+
+  function renderPresets() {
+    const wrap = $("brain-presets");
+    wrap.innerHTML = "";
+    for (const p of PRESETS) {
+      const b = document.createElement("button");
+      b.textContent = p.label;
+      b.onclick = () => {
+        sPreset = p;
+        [...wrap.children].forEach((c) => c.classList.remove("on"));
+        b.classList.add("on");
+        $("s-qa-model").value = p.model;
+        $("s-qa-base").value = p.base;
+        $("s-qa-key").placeholder = p.hint;
+        markDirty();
+      };
+      wrap.append(b);
+    }
+  }
+  renderPresets();
+
+  function guessPreset(s) {
+    const base = s.qa.base_url || "";
+    if (base.includes("localhost:20128")) return PRESETS[0];
+    if (base.includes("openrouter")) return PRESETS[1];
+    if (s.qa.kind === "Gemini") return PRESETS[3];
+    if (s.qa.kind === "Anthropic") return PRESETS[4];
+    if (base.includes("api.openai.com")) return PRESETS[2];
+    return null;
+  }
+
+  async function loadSettings() {
     try {
-      await invoke("save_secret", { name: $("key-name").value, value: v });
-      $("key-value").value = "";
-      toast("Stored. Restart the app to pick it up.");
+      S = await invoke("get_settings");
+    } catch (e) { toast("settings: " + e); return; }
+    $("s-qa-model").value = S.qa.model || "";
+    $("s-qa-base").value = S.qa.base_url || "";
+    $("s-qa-effort").value = S.qa.effort || "";
+    $("s-qa-tokens").value = S.qa.max_output_tokens || 400;
+    $("s-qa-web").checked = !!S.qa.enable_web_search;
+    sPreset = guessPreset(S);
+    [...$("brain-presets").children].forEach((c, i) =>
+      c.classList.toggle("on", PRESETS[i] === sPreset));
+    $("s-qa-key-badge").textContent = (sPreset?.slot === "revolution/9router" ? S.keys.ninerouter : S.keys.qa)
+      ? "✓ key stored" : "no key";
+    $("s-qa-key-badge").className = "badge " + ((sPreset?.slot === "revolution/9router" ? S.keys.ninerouter : S.keys.qa) ? "ok" : "no");
+
+    sTts = (S.tts.engine === "OpenaiChatAudio") ? "natural" : "windows";
+    [...$("tts-presets").children].forEach((c) => c.classList.toggle("on", c.dataset.tts === sTts));
+    $("s-tts-voice").value = S.tts.voice || (sTts === "natural" ? "marin" : "");
+    $("s-tts-model").value = S.tts.model || "openai/gpt-audio-mini";
+    $("s-tts-model-wrap").style.display = sTts === "natural" ? "" : "none";
+
+    sStt = !S.stt ? "off" : (S.stt.kind === "OpenaiCompatBatch" ? "groq" : "chataudio");
+    [...$("stt-presets").children].forEach((c) => c.classList.toggle("on", c.dataset.stt === sStt));
+    $("s-stt-key-badge").textContent = S.keys.stt ? "✓ key stored" : "no key";
+    $("s-stt-key-badge").className = "badge " + (S.keys.stt ? "ok" : "no");
+
+    $("s-ptt").value = S.hotkey.ptt;
+    $("s-ptt-toggle").checked = !!S.hotkey.toggle_mode;
+    $("s-greet").checked = !!S.companion.greet_on_game;
+    $("s-hype").checked = !!S.privacy.hype_mode;
+    $("s-hype-gap").value = S.companion.ambient_min_gap_secs;
+    $("s-upload-ask").checked = !!S.privacy.upload_on_ask_only;
+    $("s-fg-only").checked = !!S.privacy.game_foreground_only;
+    $("s-cap-ind").checked = !!S.privacy.capture_indicator;
+    $("s-cap").value = S.budget.monthly_usd_cap;
+    $("s-price-in").value = S.budget.usd_per_1m_input;
+    $("s-price-out").value = S.budget.usd_per_1m_output;
+    try { $("s-autostart").checked = await invoke("get_autostart"); } catch {}
+    sDirty = false;
+    $("savebar").classList.remove("on");
+    $("s-restart").style.display = "none";
+  }
+  loadSettings();
+
+  document.querySelectorAll("#tts-presets button").forEach((b) => {
+    b.onclick = () => {
+      sTts = b.dataset.tts;
+      [...$("tts-presets").children].forEach((c) => c.classList.remove("on"));
+      b.classList.add("on");
+      $("s-tts-model-wrap").style.display = sTts === "natural" ? "" : "none";
+      if (sTts === "natural" && !$("s-tts-voice").value) $("s-tts-voice").value = "marin";
+      markDirty();
+    };
+  });
+  document.querySelectorAll("#stt-presets button").forEach((b) => {
+    b.onclick = () => {
+      sStt = b.dataset.stt;
+      [...$("stt-presets").children].forEach((c) => c.classList.remove("on"));
+      b.classList.add("on");
+      markDirty();
+    };
+  });
+
+  $("s-qa-key-save").onclick = async () => {
+    const v = $("s-qa-key").value.trim();
+    if (!v) return;
+    const slot = sPreset?.slot || "revolution/qa";
+    try {
+      await invoke("save_secret", { name: slot, value: v });
+      $("s-qa-key").value = "";
+      $("s-qa-key-badge").textContent = "✓ key stored";
+      $("s-qa-key-badge").className = "badge ok";
+      toast(`Stored under ${slot}.`);
     } catch (e) { toast("Failed: " + e); }
   };
+  $("s-stt-key-save").onclick = async () => {
+    const v = $("s-stt-key").value.trim();
+    if (!v) return;
+    try {
+      await invoke("save_secret", { name: "revolution/stt", value: v });
+      $("s-stt-key").value = "";
+      $("s-stt-key-badge").textContent = "✓ key stored";
+      $("s-stt-key-badge").className = "badge ok";
+      toast("Stored under revolution/stt.");
+    } catch (e) { toast("Failed: " + e); }
+  };
+  $("s-test-brain").onclick = async () => {
+    $("s-test-result").textContent = "testing…";
+    try {
+      const r = await invoke("test_brain");
+      $("s-test-result").innerHTML = `<span class="ok">✓ ${r}</span>`;
+    } catch (e) {
+      $("s-test-result").innerHTML = `<span class="bad">✗ ${e}</span>`;
+    }
+  };
+  $("s-tts-test").onclick = () => invoke("tts_test");
+  $("s-autostart").addEventListener("change", async (e) => {
+    try { await invoke("set_autostart", { enabled: e.target.checked }); }
+    catch (err) { toast("autostart: " + err); }
+  });
 
-  // ---- config ----
+  function buildPatch() {
+    const set = {
+      "roles.qa.model": $("s-qa-model").value.trim(),
+      "roles.qa.effort": $("s-qa-effort").value,
+      "roles.qa.max_output_tokens": parseInt($("s-qa-tokens").value, 10) || 400,
+      "roles.qa.enable_web_search": $("s-qa-web").checked,
+      "hotkey.ptt": $("s-ptt").value.trim() || "PageUp",
+      "hotkey.toggle_mode": $("s-ptt-toggle").checked,
+      "companion.greet_on_game": $("s-greet").checked,
+      "companion.ambient_min_gap_secs": parseInt($("s-hype-gap").value, 10) || 90,
+      "privacy.hype_mode": $("s-hype").checked,
+      "privacy.upload_on_ask_only": $("s-upload-ask").checked,
+      "privacy.game_foreground_only": $("s-fg-only").checked,
+      "privacy.capture_indicator": $("s-cap-ind").checked,
+      "budget.monthly_usd_cap": parseFloat($("s-cap").value) || 0,
+      "budget.usd_per_1m_input": parseFloat($("s-price-in").value) || 0,
+      "budget.usd_per_1m_output": parseFloat($("s-price-out").value) || 0,
+    };
+    const remove = [];
+    const tables = {};
+    if ($("s-qa-effort").value === "") { remove.push("roles.qa.effort"); delete set["roles.qa.effort"]; }
+    if (sPreset) {
+      set["roles.qa.kind"] = sPreset.kind === "openai_compat" ? "openai_compat"
+        : sPreset.kind === "gemini" ? "gemini" : "anthropic";
+      set["roles.qa.api_key"] = sPreset.keyref;
+      if (sPreset.base || $("s-qa-base").value.trim())
+        set["roles.qa.base_url"] = $("s-qa-base").value.trim() || sPreset.base;
+      else remove.push("roles.qa.base_url");
+    } else if ($("s-qa-base").value.trim()) {
+      set["roles.qa.base_url"] = $("s-qa-base").value.trim();
+    }
+    // TTS
+    if (sTts === "natural") {
+      tables["voice.tts"] = {
+        engine: "openai_chat_audio",
+        base_url: "https://openrouter.ai/api/v1",
+        model: $("s-tts-model").value.trim() || "openai/gpt-audio-mini",
+        voice: $("s-tts-voice").value.trim() || "marin",
+        api_key: "keyring:revolution/qa",
+      };
+    } else {
+      const t = { engine: "windows", rate: 1.0 };
+      if ($("s-tts-voice").value.trim()) t.voice = $("s-tts-voice").value.trim();
+      tables["voice.tts"] = t;
+    }
+    // STT
+    if (sStt === "off") remove.push("voice.stt");
+    else if (sStt === "groq") {
+      tables["voice.stt"] = {
+        kind: "openai_compat_batch",
+        base_url: "https://api.groq.com/openai/v1",
+        model: "whisper-large-v3-turbo",
+        api_key: "keyring:revolution/stt",
+        language: "en",
+      };
+    } else {
+      tables["voice.stt"] = {
+        kind: "openai_chat_audio",
+        base_url: "https://openrouter.ai/api/v1",
+        model: "openai/gpt-audio-mini",
+        api_key: "keyring:revolution/qa",
+        language: "en",
+      };
+    }
+    return { set, remove, tables };
+  }
+  $("s-save").onclick = async () => {
+    try {
+      await invoke("apply_settings", { patch: buildPatch() });
+      sDirty = false;
+      toast("Saved.");
+      $("s-restart").style.display = "";
+    } catch (e) { toast("Save failed: " + e); }
+  };
+  $("s-revert").onclick = loadSettings;
+  $("s-restart").onclick = () => invoke("restart_app");
+
+  // ---------- advanced ----------
+  async function loadMonth() {
+    try {
+      const u = await invoke("get_usage");
+      const tok = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : n;
+      let line = `${u.month}: ${u.turns} answers · ${tok(u.input_tokens)} in / ${tok(u.output_tokens)} out`;
+      if (u.est_usd != null) line += ` · ≈ $${u.est_usd.toFixed(2)}`;
+      $("month-usage").textContent = line;
+      if (u.est_usd != null && u.cap_usd > 0) {
+        $("month-meter").style.width = Math.min(100, (u.est_usd / u.cap_usd) * 100) + "%";
+        $("month-cap-line").textContent = `cap $${u.cap_usd.toFixed(2)}`;
+      } else {
+        $("month-meter").style.width = "0%";
+        $("month-cap-line").textContent = "set token prices in Settings to meter dollars";
+      }
+    } catch (e) { $("month-usage").textContent = "usage unavailable: " + e; }
+  }
   $("cfg-load").onclick = async () => {
     try { $("cfg").value = await invoke("get_config_text"); } catch (e) { toast("" + e); }
   };
   $("cfg-save").onclick = async () => {
     try {
       await invoke("save_config_text", { text: $("cfg").value });
-      toast("Saved. Restart the app to apply.");
+      toast("Saved. Restart to apply.");
     } catch (e) { toast("Invalid config: " + e); }
   };
   $("cfg-open").onclick = () => invoke("open_config_dir");
+  $("adv-router").onclick = () => { invoke("start_router"); toast("Starting 9router…"); };
+  $("adv-restart").onclick = () => invoke("restart_app");
+  $("adv-quit").onclick = () => invoke("quit_app");
+
+  // ---------- onboarding ----------
+  let onboardDismissed = false;
+  let obPreset = null;
+  function obGo(step) {
+    document.querySelectorAll(".ob-step").forEach((s) =>
+      s.classList.toggle("on", parseInt(s.dataset.step, 10) === step));
+    document.querySelectorAll(".ob-dots i").forEach((d, i) =>
+      d.classList.toggle("on", i === step));
+  }
+  (function renderObPresets() {
+    const wrap = $("ob-presets");
+    for (const p of PRESETS) {
+      const b = document.createElement("button");
+      b.textContent = p.label;
+      b.style.textAlign = "left";
+      b.onclick = () => {
+        obPreset = p;
+        [...wrap.children].forEach((c) => c.classList.remove("on"));
+        b.classList.add("on");
+        $("ob-next0").disabled = false;
+        $("ob-key-hint").textContent = p.hint + ":";
+      };
+      wrap.append(b);
+    }
+  })();
+  $("ob-next0").onclick = () => obGo(1);
+  $("ob-back1").onclick = () => obGo(0);
+  $("ob-next1").onclick = async () => {
+    const v = $("ob-key").value.trim();
+    if (!v) return toast("Paste a key first.");
+    try {
+      await invoke("save_secret", { name: obPreset.slot, value: v });
+      // Write the brain block so the test uses it.
+      const patch = { set: {
+        "roles.qa.kind": obPreset.kind,
+        "roles.qa.model": obPreset.model,
+        "roles.qa.api_key": obPreset.keyref,
+        "roles.qa.enable_web_search": true,
+        "roles.qa.max_output_tokens": 400,
+      }, remove: [], tables: {} };
+      if (obPreset.base) patch.set["roles.qa.base_url"] = obPreset.base;
+      else patch.remove.push("roles.qa.base_url");
+      if (obPreset.id === "9router" || obPreset.id === "openrouter" || obPreset.id === "openai")
+        patch.set["roles.qa.effort"] = "low";
+      await invoke("apply_settings", { patch });
+      $("ob-key").value = "";
+      obGo(2);
+    } catch (e) { toast("" + e); }
+  };
+  $("ob-back2").onclick = () => obGo(1);
+  $("ob-test").onclick = async () => {
+    $("ob-test-msg").textContent = "thinking…";
+    try {
+      const r = await invoke("test_brain");
+      $("ob-test-msg").innerHTML = `<span class="ok">✓ ${r}</span>`;
+      $("ob-done").style.display = "";
+    } catch (e) {
+      $("ob-test-msg").innerHTML = `<span class="bad">✗ ${e}</span>`;
+    }
+  };
+  $("ob-done").onclick = () => { $("onboard").classList.remove("on"); onboardDismissed = true; invoke("restart_app"); };
+  $("ob-skip").onclick = () => { $("onboard").classList.remove("on"); onboardDismissed = true; };
 </script>
 </body>
 </html>
