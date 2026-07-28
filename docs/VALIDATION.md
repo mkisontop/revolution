@@ -84,3 +84,23 @@ Platform note: `MinimumUpdateIntervalSettings::Custom` requires Win11 24H2+ (thi
 | Voice input | add `[voice.stt]` with a Groq (free) or OpenAI key |
 | Pet/panel visual polish, PgUp-in-game feel, ducking depth | run `cargo run -p revolution-desktop` and play |
 | FPS impact | PresentMon during a session |
+
+---
+
+# Phase 2 — the companion layer (validated 2026-07-28, on the target machine)
+
+**72/72 tests (64 core unit + 1 core integration + 7 shell), zero clippy warnings across the workspace, `--smoke --smoke-llm` PASS live.**
+
+| Area | Proof |
+|---|---|
+| Capture never dies after alt-tab | root-caused live (same-game re-entry early-returned without re-arming capture); fixed + re-verified in-game. Ask-time guarantees added: bounded wait for the PTT-down fresh frame; one-shot grab when capture is privacy-paused (asking = consent) |
+| Brain memory tools | `remember` / `update_profile` declared on the OpenAI-compat tool wire; executed locally by the run-loop; round-2 clean-request pattern (results as user message, tools undeclared) reused from web_search |
+| Session episodes | summarizer runs async on game switch, blocking-with-6s-deadline on quit; episodes stored with wall-clock epoch timestamps (app-relative ms would break cross-session ordering) |
+| Model-written compaction | async summary with heuristic fallback; splice indices re-based after compaction |
+| Ambient hype lane | opt-in; cadence floor + new-keyframe gating + 30s freshness + PASS-token silence + budget gate; barge-in stops it instantly; delivery re-checks idleness |
+| Budget metering | monthly usage table (SQLite), enforced cap when token prices set, panel meter |
+| Tray + lifecycle | tray (panel/mute/autostart/quit), graceful shutdown flushes the episode, pet close routes through it; autostart via HKCU Run |
+| Friendly failures | localhost brain down → auto-starts 9router once + plain-language toast; 401/429 mapped to actionable text |
+| Live smoke (sol, medium effort) | vision: correct description of the real screen, TTFT 4917 ms; tool search: real patch answer (v1.0.1 + save-data fix), 15.5 s searched turn |
+| UI | living pet (blink/gaze/breathe/sleep/think/speak/celebrate + confetti), glass bubble with streaming caret + tool chips, hub panel (Chat/Memory/Settings/Advanced), first-run onboarding wizard (preset → key → live test), settings written via toml_edit preserving comments |
+| Packaging | Rev icon set generated (multi-size ICO + PNGs), NSIS per-user installer via `tauri build` |

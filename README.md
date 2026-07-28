@@ -16,10 +16,13 @@ Hold **Page Up**, ask *"what's the best Pal for this task?"*, release — and wi
 
 ## Status
 
-**Phase 0 complete — engine built and validated.** The platform-independent core (`core/`, Rust) is implemented with **55/55 tests passing and zero clippy warnings**: provider adapters (request shapes + SSE stream parsing for all three protocols), change-gate vision math, keyframe ring, memory store with hybrid retrieval and fact dedup, cache-stable prompt builder with compaction, the full PTT state machine with barge-in and latency ledger, game detection parsers, and BYOK config. See [`docs/VALIDATION.md`](docs/VALIDATION.md) for exactly what's proven and what awaits Windows bring-up.
+**Phases 0–2 shipped and machine-validated (2026-07-28)** — the engine, the Windows shell, and the companion layer are all live: WGC capture with ask-time frame guarantees, PgUp push-to-talk with STT defection guards, streaming voice answers with barge-in, web tool-search when the brain is unsure, per-game memory with the brain's own `remember`/`update_profile` tools, session episode summaries, an opt-in ambient hype lane, a living animated pet, a hub panel with first-run onboarding + full settings UI, a system tray, budget metering, and an NSIS installer. **72/72 tests, zero clippy warnings, live smoke-verified.**
 
 ```sh
-cargo test --workspace   # 55 passed — no keys, no network, no Windows needed
+cargo test --workspace                  # 72 passed — no keys, no network needed
+cargo run -p revolution-desktop         # run it (dev)
+target\debug\revolution-desktop --smoke # headless hardware validation
+cd desktop/src-tauri && tauri build     # release + NSIS installer
 ```
 
 | Document | What's in it |

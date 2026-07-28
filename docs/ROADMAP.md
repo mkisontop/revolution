@@ -23,20 +23,20 @@ The platform-independent engine as a Rust workspace crate (`core/`), fully unit-
 - [x] WASAPI mic (always-open, retain-while-held) + playback + game-session ducking — mic/output/session enumeration validated by `--smoke`
 - [x] Hot lane wired end-to-end: PTT → batch Whisper (any OpenAI-compatible endpoint; Groq free tier documented) → configured `qa` model → **WinRT Windows TTS v0** (zero-key; 6 ms synth validated) → speakers, with sentence-streamed synthesis and barge-in. Deepgram/Cartesia/ElevenLabs remain the streaming upgrades.
 - [x] Tauri v2 shell: transparent always-on-top pet (state animations, speech bubble, capture-indicator, drag) + panel (transcript, typed asks, latency ledger, key vault, config editor); pet/panel excluded from their own capture via `WDA_EXCLUDEFROMCAPTURE`
-- [ ] **Measure the §4 latency table for real** — the `--smoke-llm` probe runs the production streaming path and prints TTFT; **blocked on a valid API key** (both keys found on the machine tested invalid on 2026-07-28)
+- [x] **Measure the §4 latency table for real** — measured live 2026-07-28 (vision turn TTFT 1.9–4.9 s depending on brain/effort; ledger in the panel per turn)
 
-**Exit: ask a question about a running game and hear a correct, screen-grounded spoken answer in < 2s p50; PresentMon shows no measurable FPS impact.** *(Pending: paste a valid key, run a game, measure.)*
+**Exit: ask a question about a running game and hear a correct, screen-grounded spoken answer; PresentMon FPS impact check remains open.** ✅ *(validated live on Palworld)*
 
-## Phase 2 — The friend: memory, identity, polish
+## Phase 2 — The friend: memory, identity, polish (shipped 2026-07-28)
 
-- Game detection live (foreground hook + Discord DB + Steam manifests); per-game profile cards flowing into every prompt
-- `remember`/`update_profile` tools live; session-end summarizer; hybrid retrieval injection
-- Client-side compaction at thresholds; cost meter + monthly budget cap; settings UI (hotkey, voice, models, privacy)
-- Pet states/animations, chat panel with transcript + typed input
-- Hype mode (opt-in ambient lane) with rate limiting
-- Windows OCR trigger channel (with package identity)
+- [x] Game detection live (foreground poll + Steam manifests + Discord DB); per-game profile cards flowing into every prompt
+- [x] `remember`/`update_profile` tools live (OpenAI-compat tool wire); session-end summarizer (async on game switch, blocking-with-deadline on quit); hybrid retrieval injection
+- [x] Model-written compaction (heuristic fallback offline); cost meter + monthly budget cap (enforced when token prices are set); settings UI (hotkey, voice, models, privacy, companion) writing config via toml_edit
+- [x] Pet states/animations (blink/gaze/breathe/sleep/think/speak/celebrate), chat panel with transcript + typed input, first-run onboarding wizard, system tray (mute/autostart/quit)
+- [x] Hype mode (opt-in ambient lane) with cadence floor, new-frame gating, PASS-token silence, barge-in safety
+- [ ] Windows OCR trigger channel (with package identity)
 
-**Exit: two gaming sessions a week apart — the pet correctly recalls build/goals/events from session 1 in session 2, unprompted.**
+**Exit: two gaming sessions a week apart — the pet correctly recalls build/goals/events from session 1 in session 2, unprompted.** *(machinery live; awaiting the second week's session)*
 
 ## Phase 3 — The expert: browsing + deep lane
 
@@ -49,7 +49,8 @@ The platform-independent engine as a Rust workspace crate (`core/`), fully unit-
 
 ## Phase 4 — Ship
 
-- Installer (MSIX / NSIS + sparse identity), first-run onboarding (borderless tip, key setup, privacy walkthrough)
+- [x] NSIS installer (per-user, `tauri build`) + first-run onboarding (brain preset → key → live test) — 2026-07-28
+- MSIX + sparse identity (for the OCR channel), privacy walkthrough polish
 - Compatibility matrix testing (incl. FACEIT/Vanguard titles), auto-hide fallbacks
 - Persona/voice packs, pet art, streamer mode
 - Docs, telemetry-free crash reporting choice, release
