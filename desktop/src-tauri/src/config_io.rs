@@ -96,6 +96,9 @@ pub fn load_or_init() -> LoadedConfig {
     if let Some(r) = cfg.roles.deep.as_mut() {
         resolve_key("roles.deep", &mut r.api_key, &mut warnings);
     }
+    if let Some(r) = cfg.roles.search.as_mut() {
+        resolve_key("roles.search", &mut r.api_key, &mut warnings);
+    }
     if let Some(r) = cfg.roles.realtime.as_mut() {
         resolve_key("roles.realtime", &mut r.api_key, &mut warnings);
     }

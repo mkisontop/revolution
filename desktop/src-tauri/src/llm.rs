@@ -94,12 +94,13 @@ impl SentenceChunker {
 pub fn spawn_stream(
     client: reqwest::Client,
     cfg: ProviderConfig,
+    search_cfg: Option<ProviderConfig>,
     req: ChatRequest,
     loop_tx: Sender<LoopMsg>,
     tts_tx: Sender<TtsCmd>,
 ) -> tokio::task::JoinHandle<()> {
     rt().spawn(async move {
-        if let Err(e) = stream_once(client, cfg, req, &loop_tx, &tts_tx).await {
+        if let Err(e) = stream_once(client, cfg, search_cfg, req, &loop_tx, &tts_tx).await {
             let _ = loop_tx.send(LoopMsg::LlmFailed(format!("{e:#}")));
         }
     })
@@ -157,17 +158,24 @@ impl ToolCallAccum {
     }
 }
 
-/// The searching side of tool-search: one non-streaming request to the same
-/// model with OpenRouter's `:online` suffix, which runs their web plugin.
-/// Only invoked when the brain explicitly asked to search.
+/// The searching side of tool-search: one non-streaming request to a
+/// web-capable model. OpenRouter models get the `:online` suffix (their web
+/// plugin); anything else is called as-is, so a natively-searching endpoint
+/// or a Perplexity-style model works too. Only invoked when the brain
+/// explicitly asked to search.
 async fn online_lookup(
     client: &reqwest::Client,
     cfg: &ProviderConfig,
     base_url: &str,
     query: &str,
 ) -> anyhow::Result<String> {
+    let model = if base_url.contains("openrouter.ai") && !cfg.model.contains(":online") {
+        format!("{}:online", cfg.model)
+    } else {
+        cfg.model.clone()
+    };
     let body = serde_json::json!({
-        "model": format!("{}:online", cfg.model),
+        "model": model,
         "max_tokens": 600,
         "messages": [{
             "role": "user",
@@ -216,15 +224,24 @@ const WEB_SEARCH_TOOL_JSON: &str = r#"[{
 async fn stream_once(
     client: reqwest::Client,
     cfg: ProviderConfig,
+    search_cfg: Option<ProviderConfig>,
     req: ChatRequest,
     loop_tx: &Sender<LoopMsg>,
     tts_tx: &Sender<TtsCmd>,
 ) -> anyhow::Result<()> {
     let mut spec = provider_for(cfg.kind).build_request(&cfg, &req);
 
-    // OpenRouter has no native-search passthrough; give the model an explicit
-    // web_search function instead (searches only when the model decides to).
-    let tool_search = cfg.enable_web_search && spec.url.contains("openrouter.ai");
+    // Endpoints without native search passthrough (OpenRouter, local routers
+    // like 9router) get an explicit web_search function instead, executed by
+    // the search role — so the brain searches only when it decides to.
+    let searcher = search_cfg.filter(|s| !s.api_key.trim().is_empty()).or_else(|| {
+        spec.url
+            .contains("openrouter.ai")
+            .then(|| cfg.clone())
+    });
+    let tool_search = cfg.enable_web_search
+        && searcher.is_some()
+        && matches!(cfg.kind, revolution_core::providers::ProviderKind::OpenaiCompat);
     if tool_search {
         if let Some(obj) = spec.body.as_object_mut() {
             obj.remove("web_search_options"); // adapter's non-OpenRouter shape
@@ -319,8 +336,12 @@ async fn stream_once(
         let _ = loop_tx.send(LoopMsg::ToolActivity(format!("web_search: {query}")));
         let _ = tts_tx.send(TtsCmd::Sentence("Let me double-check that real quick.".into()));
 
-        let base_url = spec.url.trim_end_matches("/chat/completions").to_string();
-        let result = online_lookup(&client, &cfg, &base_url, &query)
+        let search_provider = searcher.as_ref().expect("tool_search implies a searcher");
+        let search_base = search_provider
+            .base_url
+            .clone()
+            .unwrap_or_else(|| spec.url.trim_end_matches("/chat/completions").to_string());
+        let result = online_lookup(&client, search_provider, &search_base, &query)
             .await
             .unwrap_or_else(|e| format!("Search failed ({e:#}) — answer from what you know and say you could not verify."));
 

@@ -434,6 +434,7 @@ impl Loop {
         self.llm_handle = Some(llm::spawn_stream(
             self.client.clone(),
             self.cfg.roles.qa.clone(),
+            self.cfg.roles.search.clone(),
             req,
             self.loop_tx.clone(),
             self.tts_tx.clone(),

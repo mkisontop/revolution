@@ -275,7 +275,14 @@ fn tool_search_probe(cfg: &revolution_core::config::AppConfig) -> bool {
     let (ltx, lrx) = std::sync::mpsc::channel::<LoopMsg>();
     let (ttx, _trx_keepalive) = std::sync::mpsc::channel();
     let t0 = now_ms();
-    let _handle = crate::llm::spawn_stream(reqwest::Client::new(), qa, req, ltx, ttx);
+    let _handle = crate::llm::spawn_stream(
+        reqwest::Client::new(),
+        qa,
+        cfg.roles.search.clone(),
+        req,
+        ltx,
+        ttx,
+    );
 
     let mut text = String::new();
     let mut searched = false;
@@ -349,7 +356,7 @@ fn llm_probe(cfg: &revolution_core::config::AppConfig, frame: Option<Vec<u8>>) -
     let (ltx, lrx) = std::sync::mpsc::channel::<LoopMsg>();
     let (ttx, _trx_keepalive) = std::sync::mpsc::channel();
     let t0 = now_ms();
-    let _handle = crate::llm::spawn_stream(reqwest::Client::new(), qa, req, ltx, ttx);
+    let _handle = crate::llm::spawn_stream(reqwest::Client::new(), qa, None, req, ltx, ttx);
 
     let mut text = String::new();
     loop {

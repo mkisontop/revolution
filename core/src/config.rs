@@ -51,6 +51,11 @@ pub struct Roles {
     /// Async research lane.
     #[serde(default)]
     pub deep: Option<ProviderConfig>,
+    /// Executes the brain's `web_search` tool calls. Defaults to the `qa`
+    /// provider when it can search natively; set explicitly when the brain
+    /// runs on an endpoint without web access (a local router, say).
+    #[serde(default)]
+    pub search: Option<ProviderConfig>,
     /// Pipeline B: speech-to-speech (DESIGN.md §7.4).
     #[serde(default)]
     pub realtime: Option<RealtimeRole>,
