@@ -27,6 +27,33 @@ pub fn rt() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Strip markdown so the voice doesn't read decoration out loud. GPT-5.x
+/// models bold aggressively (`**Palworld**`) even when told not to.
+pub fn speakable(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // Emphasis/code markers carry no meaning aloud.
+            '*' | '`' | '_' | '~' => {}
+            // Headings/quote markers only at the start of a line.
+            '#' | '>' if out.is_empty() || out.ends_with('\n') => {
+                while matches!(chars.peek(), Some('#' | '>' | ' ')) {
+                    chars.next();
+                }
+            }
+            // Bullets read as pauses, not "dash".
+            '-' if out.is_empty() || out.ends_with('\n') => {
+                while matches!(chars.peek(), Some(' ')) {
+                    chars.next();
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Split streamed text deltas into speakable sentences for the TTS queue.
 /// Emission rule: sentence terminator (.!?…) or newline, with a minimum
 /// length so abbreviations don't fire early; force-flush past 220 chars.
@@ -300,7 +327,10 @@ async fn stream_once(
                             }
                             full.push_str(&t);
                             for s in chunker.push(&t) {
-                                let _ = tts_tx.send(TtsCmd::Sentence(s));
+                                let spoken = speakable(&s);
+                                if !spoken.trim().is_empty() {
+                                    let _ = tts_tx.send(TtsCmd::Sentence(spoken));
+                                }
                             }
                             let _ = loop_tx.send(LoopMsg::Delta(t));
                         }
@@ -345,17 +375,19 @@ async fn stream_once(
             .await
             .unwrap_or_else(|e| format!("Search failed ({e:#}) — answer from what you know and say you could not verify."));
 
-        // Round 2 is a CLEAN request: results injected as a system note and
-        // the tool undeclared. (Formal tool-result messages + tool_choice
-        // "none" both failed live — OpenRouter's Gemini translation kept
-        // emitting more tool calls. No declared tool → it must answer.)
+        // Round 2 is a CLEAN request: results injected as a USER message and
+        // the tool undeclared. Both details are load-bearing, each found by
+        // live failure: formal tool-result messages and tool_choice "none"
+        // still produce more tool calls (OpenRouter/Gemini), and a mid-
+        // conversation *system* message is dropped entirely by 9router's
+        // Codex translation — the model then claims it has no web access.
         if let Some(messages) = spec.body["messages"].as_array_mut() {
             messages.push(serde_json::json!({
-                "role": "system",
+                "role": "user",
                 "content": format!(
                     "Web search results for \"{query}\":\n{result}\n\nAnswer \
-                     the user's question now using these results. Do not \
-                     mention the search mechanics."
+                     my question above using these results. Do not mention \
+                     the search mechanics."
                 )
             }));
         }
@@ -366,7 +398,10 @@ async fn stream_once(
     }
 
     if let Some(rest) = chunker.flush() {
-        let _ = tts_tx.send(TtsCmd::Sentence(rest));
+        let spoken = speakable(&rest);
+        if !spoken.trim().is_empty() {
+            let _ = tts_tx.send(TtsCmd::Sentence(spoken));
+        }
     }
     let _ = tts_tx.send(TtsCmd::EndOfUtterance);
     let _ = loop_tx.send(LoopMsg::LlmDone {
@@ -380,6 +415,17 @@ async fn stream_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_never_reaches_the_voice() {
+        assert_eq!(
+            speakable("You're in **Palworld** at your `base` — catch a _Foxparks_."),
+            "You're in Palworld at your base — catch a Foxparks."
+        );
+        assert_eq!(speakable("## Next steps\n- grab wood\n- build it"), "Next steps\ngrab wood\nbuild it");
+        // Mid-word hyphens and math survive.
+        assert_eq!(speakable("It's a 2-shot combo, 15-20 damage."), "It's a 2-shot combo, 15-20 damage.");
+    }
 
     #[test]
     fn tool_call_accumulates_across_deltas() {
